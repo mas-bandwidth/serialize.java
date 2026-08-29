@@ -19,10 +19,14 @@
 //
 // JVM discipline, by hand (no JMH -- zero dependencies): every timed loop
 // lives in its own method so the measured code is a normally-compiled method
-// body, not an on-stack-replaced interpreter frame; warmup trials (default 2,
-// BENCH_WARMUP_TRIALS overrides) run each leg to full C2 compilation before
-// the five timed trials; and every loop's work drains into a static sink the
-// bench publishes at exit, so no loop can be proven unobservable.
+// body, not an on-stack-replaced interpreter frame; the loop methods are one
+// per shape and direction -- bench.c's per-shape functions, which the JVM
+// needs for its own reason: a shared generic loop pools its type profile
+// across shapes, goes megamorphic, and turns the timings bimodal; warmup
+// trials (default 2, BENCH_WARMUP_TRIALS overrides) run each leg to full C2
+// compilation before the five timed trials; and every loop's work drains
+// into a static sink the bench publishes at exit, so no loop can be proven
+// unobservable.
 //
 // GOLDEN GATED: before any row is timed, the exact buffers its loops write
 // are verified byte for byte against pins produced by serialize.c's own bench
@@ -367,7 +371,6 @@ public final class Bench
     interface ShapeVary<P>      { void run( P packet ); }
     interface ShapeSerialize<P> { boolean run( BitStream stream, P packet ); }
     interface ShapeCheck<P>     { boolean run( P expected, P decoded ); }
-    interface ShapeSink<P>      { long run( P decoded ); }
 
     // shape: the representative stream packet (ints, bits, bool, floats, uint64, bytes)
 
@@ -718,19 +721,22 @@ public final class Bench
     }
 
     /* ----------------------------------------------------------------------
-       the timed legs, shared by the stream row and the shape rows: each in
-       its own method, best-of-five taken by the caller after warmup
+       the timed legs: one loop method per shape and direction, mirroring
+       bench.c's per-shape write/read/measure functions. C has no other way;
+       the JVM has the same no-other-way for a different reason — a shared
+       generic loop method pools its type profile across every shape, turning
+       each serialize call site megamorphic and the timings bimodal. A
+       per-shape loop is compiled against exactly the types it runs.
        ---------------------------------------------------------------------- */
 
-    static <P> double timeShapeWrite( WriteStream writer, byte[] buffer, P packet, ShapeVary<P> vary,
-                                      ShapeSerialize<P> serialize )
+    static double timeStreamWrite( WriteStream writer, byte[] buffer, BenchPacket packet )
     {
         double start = now();
         for ( int i = 0; i < STREAM_NUM_PACKETS; i++ )
         {
-            vary.run( packet );
+            varyBenchPacket( packet );
             writer.reset( buffer, VARIANT_BUFFER_SIZE );
-            if ( !serialize.run( writer, packet ) )
+            if ( !serializeBenchPacket( writer, packet ) )
             {
                 System.exit( 1 );
             }
@@ -740,35 +746,129 @@ public final class Bench
         return now() - start;
     }
 
-    static <P> double timeShapeRead( ReadStream reader, byte[][] variants, int bytesPerPacket, P decoded,
-                                     ShapeSerialize<P> serialize, ShapeSink<P> sinkOf )
+    static double timeStreamRead( ReadStream reader, byte[][] variants, int bytesPerPacket, BenchPacket decoded )
     {
         double start = now();
         for ( int i = 0; i < STREAM_NUM_PACKETS; i++ )
         {
             reader.reset( variants[i & ( NUM_VARIANTS - 1 )], bytesPerPacket );
-            if ( !serialize.run( reader, decoded ) )
+            if ( !serializeBenchPacket( reader, decoded ) )
             {
                 System.exit( 1 );
             }
-            sink += sinkOf.run( decoded );
+            sink += decoded.b.value;
         }
         return now() - start;
     }
 
-    static <P> double timeShapeMeasure( MeasureStream measure, P packet, ShapeVary<P> vary,
-                                        ShapeSerialize<P> serialize )
+    static double timeStreamMeasure( MeasureStream measure, BenchPacket packet )
     {
         double start = now();
         for ( int i = 0; i < STREAM_NUM_PACKETS; i++ )
         {
-            vary.run( packet );
+            varyBenchPacket( packet );
             measure.reset();
-            if ( !serialize.run( measure, packet ) )
+            if ( !serializeBenchPacket( measure, packet ) )
             {
                 System.exit( 1 );
             }
             sink += measure.getBitsProcessed();
+        }
+        return now() - start;
+    }
+
+    static double timeIntWrite( WriteStream writer, byte[] buffer, IntFields packet )
+    {
+        double start = now();
+        for ( int i = 0; i < STREAM_NUM_PACKETS; i++ )
+        {
+            varyIntFields( packet );
+            writer.reset( buffer, VARIANT_BUFFER_SIZE );
+            if ( !serializeIntFields( writer, packet ) )
+            {
+                System.exit( 1 );
+            }
+            writer.flush();
+            sink += writer.getBytesProcessed();
+        }
+        return now() - start;
+    }
+
+    static double timeIntRead( ReadStream reader, byte[][] variants, int bytesPerPacket, IntFields decoded )
+    {
+        double start = now();
+        for ( int i = 0; i < STREAM_NUM_PACKETS; i++ )
+        {
+            reader.reset( variants[i & ( NUM_VARIANTS - 1 )], bytesPerPacket );
+            if ( !serializeIntFields( reader, decoded ) )
+            {
+                System.exit( 1 );
+            }
+            sink += decoded.f0.value;
+        }
+        return now() - start;
+    }
+
+    static double timeBitsWrite( WriteStream writer, byte[] buffer, BitsFields packet )
+    {
+        double start = now();
+        for ( int i = 0; i < STREAM_NUM_PACKETS; i++ )
+        {
+            varyBitsFields( packet );
+            writer.reset( buffer, VARIANT_BUFFER_SIZE );
+            if ( !serializeBitsFields( writer, packet ) )
+            {
+                System.exit( 1 );
+            }
+            writer.flush();
+            sink += writer.getBytesProcessed();
+        }
+        return now() - start;
+    }
+
+    static double timeBitsRead( ReadStream reader, byte[][] variants, int bytesPerPacket, BitsFields decoded )
+    {
+        double start = now();
+        for ( int i = 0; i < STREAM_NUM_PACKETS; i++ )
+        {
+            reader.reset( variants[i & ( NUM_VARIANTS - 1 )], bytesPerPacket );
+            if ( !serializeBitsFields( reader, decoded ) )
+            {
+                System.exit( 1 );
+            }
+            sink += decoded.b7.value;
+        }
+        return now() - start;
+    }
+
+    static double timeGenWrite( WriteStream writer, byte[] buffer, GenFields packet )
+    {
+        double start = now();
+        for ( int i = 0; i < STREAM_NUM_PACKETS; i++ )
+        {
+            varyGenFields( packet );
+            writer.reset( buffer, VARIANT_BUFFER_SIZE );
+            if ( !serializeGenFields( writer, packet ) )
+            {
+                System.exit( 1 );
+            }
+            writer.flush();
+            sink += writer.getBytesProcessed();
+        }
+        return now() - start;
+    }
+
+    static double timeGenRead( ReadStream reader, byte[][] variants, int bytesPerPacket, GenFields decoded )
+    {
+        double start = now();
+        for ( int i = 0; i < STREAM_NUM_PACKETS; i++ )
+        {
+            reader.reset( variants[i & ( NUM_VARIANTS - 1 )], bytesPerPacket );
+            if ( !serializeGenFields( reader, decoded ) )
+            {
+                System.exit( 1 );
+            }
+            sink += decoded.sequence.value;
         }
         return now() - start;
     }
@@ -817,14 +917,13 @@ public final class Bench
             initBenchPacket( packet );
             lcgSeed();
 
-            double elapsed = timeShapeWrite( writer, buffer, packet, Bench::varyBenchPacket, Bench::serializeBenchPacket );
+            double elapsed = timeStreamWrite( writer, buffer, packet );
             if ( trial >= WARMUP_TRIALS && elapsed < bestWrite )
             {
                 bestWrite = elapsed;
             }
 
-            elapsed = timeShapeRead( reader, variants, gated.bytesPerPacket(), decoded, Bench::serializeBenchPacket,
-                                     (BenchPacket d) -> d.b.value );
+            elapsed = timeStreamRead( reader, variants, gated.bytesPerPacket(), decoded );
             if ( trial >= WARMUP_TRIALS && elapsed < bestRead )
             {
                 bestRead = elapsed;
@@ -833,7 +932,7 @@ public final class Bench
             // measure prices the packet without touching memory; that it is
             // nearly free is the property worth tracking. The vary call stays
             // so the loop is the loop the other family benches time.
-            elapsed = timeShapeMeasure( measure, packet, Bench::varyBenchPacket, Bench::serializeBenchPacket );
+            elapsed = timeStreamMeasure( measure, packet );
             if ( trial >= WARMUP_TRIALS && elapsed < bestMeasure )
             {
                 bestMeasure = elapsed;
@@ -857,31 +956,27 @@ public final class Bench
        packet shapes: write and read, M packets/s
        ---------------------------------------------------------------------- */
 
-    static <P> void benchShape( String row, String label, GatedShape<P> gated, ShapeInit<P> init, ShapeVary<P> vary,
-                                ShapeSerialize<P> serialize, ShapeSink<P> sinkOf )
-    {
-        P packet = gated.packet();
-        P decoded = gated.decoded();
-        byte[][] variants = gated.variants();
-        byte[] buffer = new byte[VARIANT_BUFFER_SIZE];
-        WriteStream writer = new WriteStream( buffer, VARIANT_BUFFER_SIZE );
-        ReadStream reader = new ReadStream( variants[0], gated.bytesPerPacket() );
+    // the timed-leg pair for one shape row: the loops themselves are the
+    // per-shape methods above, handed in as monomorphic wrappers so the trial
+    // and reporting scaffold is written once
+    interface TimedLeg { double run(); }
 
+    static void benchShapeRow( String row, String label, TimedLeg writeLeg, TimedLeg readLeg )
+    {
         double bestWrite = Double.POSITIVE_INFINITY;
         double bestRead = Double.POSITIVE_INFINITY;
 
         for ( int trial = 0; trial < WARMUP_TRIALS + NUM_TRIALS; trial++ )
         {
-            init.run( packet );
             lcgSeed();
 
-            double elapsed = timeShapeWrite( writer, buffer, packet, vary, serialize );
+            double elapsed = writeLeg.run();
             if ( trial >= WARMUP_TRIALS && elapsed < bestWrite )
             {
                 bestWrite = elapsed;
             }
 
-            elapsed = timeShapeRead( reader, variants, gated.bytesPerPacket(), decoded, serialize, sinkOf );
+            elapsed = readLeg.run();
             if ( trial >= WARMUP_TRIALS && elapsed < bestRead )
             {
                 bestRead = elapsed;
@@ -927,12 +1022,30 @@ public final class Bench
 
         print( "\n" );
 
-        benchShape( "int_packet", "int packet   (runtime):     ", gatedInt,
-            (IntFields f) -> {}, Bench::varyIntFields, Bench::serializeIntFields, (IntFields d) -> d.f0.value );
-        benchShape( "bits_packet", "bits packet  (runtime):     ", gatedBits,
-            (BitsFields f) -> {}, Bench::varyBitsFields, Bench::serializeBitsFields, (BitsFields d) -> d.b7.value );
-        benchShape( "mixed_packet", "mixed packet (runtime):     ", gatedGen,
-            (GenFields f) -> {}, Bench::varyGenFields, Bench::serializeGenFields, (GenFields d) -> d.sequence.value );
+        {
+            byte[] buffer = new byte[VARIANT_BUFFER_SIZE];
+            WriteStream writer = new WriteStream( buffer, VARIANT_BUFFER_SIZE );
+            ReadStream reader = new ReadStream( gatedInt.variants()[0], gatedInt.bytesPerPacket() );
+            benchShapeRow( "int_packet", "int packet   (runtime):     ",
+                () -> timeIntWrite( writer, buffer, gatedInt.packet() ),
+                () -> timeIntRead( reader, gatedInt.variants(), gatedInt.bytesPerPacket(), gatedInt.decoded() ) );
+        }
+        {
+            byte[] buffer = new byte[VARIANT_BUFFER_SIZE];
+            WriteStream writer = new WriteStream( buffer, VARIANT_BUFFER_SIZE );
+            ReadStream reader = new ReadStream( gatedBits.variants()[0], gatedBits.bytesPerPacket() );
+            benchShapeRow( "bits_packet", "bits packet  (runtime):     ",
+                () -> timeBitsWrite( writer, buffer, gatedBits.packet() ),
+                () -> timeBitsRead( reader, gatedBits.variants(), gatedBits.bytesPerPacket(), gatedBits.decoded() ) );
+        }
+        {
+            byte[] buffer = new byte[VARIANT_BUFFER_SIZE];
+            WriteStream writer = new WriteStream( buffer, VARIANT_BUFFER_SIZE );
+            ReadStream reader = new ReadStream( gatedGen.variants()[0], gatedGen.bytesPerPacket() );
+            benchShapeRow( "mixed_packet", "mixed packet (runtime):     ",
+                () -> timeGenWrite( writer, buffer, gatedGen.packet() ),
+                () -> timeGenRead( reader, gatedGen.variants(), gatedGen.bytesPerPacket(), gatedGen.decoded() ) );
+        }
 
         print( "\n(the C++ bench also prints a compile time row per shape. that surface is\n" );
         print( " C++ template machinery with no counterpart here, the same omission the\n" );
