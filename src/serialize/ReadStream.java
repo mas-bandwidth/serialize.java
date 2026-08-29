@@ -26,6 +26,18 @@ public final class ReadStream implements BitStream
         reader = new BitReader( buffer, bytes );
     }
 
+    /**
+     * Rewinds the stream over the given buffer, the allocation-free reuse
+     * surface: same contract as the constructor.
+     * @param buffer the buffer to read from. The array must extend at least
+     *        8 bytes past {@code bytes} — see {@link BitReader}.
+     * @param bytes the number of bytes of packet data to read.
+     */
+    public void reset( byte[] buffer, int bytes )
+    {
+        reader.reset( buffer, bytes );
+    }
+
     @Override public boolean isWriting() { return false; }
 
     @Override public boolean isReading() { return true; }

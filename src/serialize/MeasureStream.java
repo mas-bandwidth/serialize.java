@@ -24,6 +24,12 @@ public final class MeasureStream implements BitStream
         bitsWritten = 0;
     }
 
+    /** Rewinds the measure to zero bits, the allocation-free reuse surface. */
+    public void reset()
+    {
+        bitsWritten = 0;
+    }
+
     @Override public boolean isWriting() { return true; }
 
     @Override public boolean isReading() { return false; }

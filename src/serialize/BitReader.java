@@ -16,8 +16,8 @@ package serialize;
  */
 public final class BitReader
 {
-    private final byte[] data;
-    private final long numBits;
+    private byte[] data;
+    private long numBits;
     private long bitsRead;
 
     /**
@@ -27,6 +27,18 @@ public final class BitReader
      * @param bytes the number of bytes of bitpacked data to read.
      */
     public BitReader( byte[] data, int bytes )
+    {
+        reset( data, bytes );
+    }
+
+    /**
+     * Rewinds the reader over the given buffer, the allocation-free reuse
+     * surface: same contract as the constructor.
+     * @param data the bitpacked data to read. The array must extend at least
+     *        8 bytes past {@code bytes} — see the class comment.
+     * @param bytes the number of bytes of bitpacked data to read.
+     */
+    public void reset( byte[] data, int bytes )
     {
         assert data != null;
         assert bytes >= 0;

@@ -19,9 +19,9 @@ public final class BitWriter
 {
     static final VarHandle LONG_LE = MethodHandles.byteArrayViewVarHandle( long[].class, ByteOrder.LITTLE_ENDIAN );
 
-    private final byte[] data;
+    private byte[] data;
     private long scratch;
-    private final long numBits;
+    private long numBits;
     private long bitsWritten;
     private int wordIndex;
     private int scratchBits;
@@ -32,6 +32,17 @@ public final class BitWriter
      * @param bytes the size of the buffer in bytes. Must be a multiple of 8.
      */
     public BitWriter( byte[] data, int bytes )
+    {
+        reset( data, bytes );
+    }
+
+    /**
+     * Rewinds the writer over the given buffer, the allocation-free reuse
+     * surface: same contract as the constructor.
+     * @param data the buffer to fill with bitpacked data.
+     * @param bytes the size of the buffer in bytes. Must be a multiple of 8.
+     */
+    public void reset( byte[] data, int bytes )
     {
         assert data != null;
         assert ( bytes % 8 ) == 0;

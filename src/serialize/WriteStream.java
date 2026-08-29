@@ -24,6 +24,17 @@ public final class WriteStream implements BitStream
         writer = new BitWriter( buffer, bytes );
     }
 
+    /**
+     * Rewinds the stream over the given buffer, the allocation-free reuse
+     * surface: same contract as the constructor.
+     * @param buffer the buffer to write to.
+     * @param bytes the number of bytes in the buffer. Must be a multiple of 8.
+     */
+    public void reset( byte[] buffer, int bytes )
+    {
+        writer.reset( buffer, bytes );
+    }
+
     @Override public boolean isWriting() { return true; }
 
     @Override public boolean isReading() { return false; }
