@@ -42,11 +42,29 @@ public final class ReadStream implements BitStream
 
     @Override public boolean isReading() { return true; }
 
-    @Override
-    public boolean serializeBits( IntRef value, int bits )
+    // the contracts of the hot operations live in their own methods so the
+    // hot bodies stay small enough for the JIT to inline: an assert's
+    // bytecode is carried even when -ea is absent, and it counts against
+    // inlining thresholds
+
+    private static boolean checkBits32( int bits )
     {
         assert bits > 0;
         assert bits <= 32;
+        return true;
+    }
+
+    private static boolean checkBits64( int bits )
+    {
+        assert bits > 0;
+        assert bits <= 64;
+        return true;
+    }
+
+    @Override
+    public boolean serializeBits( IntRef value, int bits )
+    {
+        assert checkBits32( bits );
         if ( reader.wouldReadPastEnd( bits ) )
         {
             return false;
@@ -58,8 +76,7 @@ public final class ReadStream implements BitStream
     @Override
     public boolean serializeBits64( LongRef value, int bits )
     {
-        assert bits > 0;
-        assert bits <= 64;
+        assert checkBits64( bits );
         if ( bits <= 32 )
         {
             if ( reader.wouldReadPastEnd( bits ) )

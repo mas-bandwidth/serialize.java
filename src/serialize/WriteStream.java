@@ -39,11 +39,45 @@ public final class WriteStream implements BitStream
 
     @Override public boolean isReading() { return false; }
 
-    @Override
-    public boolean serializeBits( IntRef value, int bits )
+    // the contracts of the hot operations live in their own methods so the
+    // hot bodies stay small enough for the JIT to inline: an assert's
+    // bytecode is carried even when -ea is absent, and it counts against
+    // inlining thresholds
+
+    private static boolean checkBits32( int bits )
     {
         assert bits > 0;
         assert bits <= 32;
+        return true;
+    }
+
+    private static boolean checkBits64( int bits )
+    {
+        assert bits > 0;
+        assert bits <= 64;
+        return true;
+    }
+
+    private static boolean checkInt( int value, int min, int max )
+    {
+        assert min <= max;
+        assert value >= min;
+        assert value <= max;
+        return true;
+    }
+
+    private static boolean checkInt64( long value, long min, long max )
+    {
+        assert min <= max;
+        assert value >= min;
+        assert value <= max;
+        return true;
+    }
+
+    @Override
+    public boolean serializeBits( IntRef value, int bits )
+    {
+        assert checkBits32( bits );
         writer.writeBits( value.value, bits );
         return true;
     }
@@ -51,8 +85,7 @@ public final class WriteStream implements BitStream
     @Override
     public boolean serializeBits64( LongRef value, int bits )
     {
-        assert bits > 0;
-        assert bits <= 64;
+        assert checkBits64( bits );
         if ( bits <= 32 )
         {
             writer.writeBits( (int) value.value, bits );
@@ -69,9 +102,7 @@ public final class WriteStream implements BitStream
     // internal int write shared by the composed operations (string lengths, relative tiers)
     private void writeInt( int value, int min, int max )
     {
-        assert min <= max;
-        assert value >= min;
-        assert value <= max;
+        assert checkInt( value, min, max );
         int bits = SerializeUtil.bitsRequired( min, max );
         if ( bits == 0 )
         {
@@ -91,9 +122,7 @@ public final class WriteStream implements BitStream
     @Override
     public boolean serializeInt64( LongRef value, long min, long max )
     {
-        assert min <= max;
-        assert value.value >= min;
-        assert value.value <= max;
+        assert checkInt64( value.value, min, max );
         int bits = SerializeUtil.bitsRequired64( min, max );
         if ( bits == 0 )
         {
@@ -215,11 +244,17 @@ public final class WriteStream implements BitStream
         return true;
     }
 
-    @Override
-    public boolean serializeBytes( byte[] data, int bytes )
+    private static boolean checkBytes( byte[] data, int bytes )
     {
         assert data != null;
         assert bytes >= 0;
+        return true;
+    }
+
+    @Override
+    public boolean serializeBytes( byte[] data, int bytes )
+    {
+        assert checkBytes( data, bytes );
         serializeAlign();
         writer.writeBytes( data, bytes );
         return true;
