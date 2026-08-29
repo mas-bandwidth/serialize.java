@@ -40,12 +40,18 @@ public final class BitReader
      */
     public void reset( byte[] data, int bytes )
     {
-        assert data != null;
-        assert bytes >= 0;
-        assert data.length - bytes >= 8;        // the allocation contract: 8 bytes of slack past the data
+        assert checkReset( data, bytes );
         this.data = data;
         this.numBits = (long) bytes * 8;
         this.bitsRead = 0;
+    }
+
+    private static boolean checkReset( byte[] data, int bytes )
+    {
+        assert data != null;
+        assert bytes >= 0;
+        assert data.length - bytes >= 8;        // the allocation contract: 8 bytes of slack past the data
+        return true;
     }
 
     /** Would reading this many bits read past the end of the buffer? */
@@ -61,9 +67,10 @@ public final class BitReader
      */
     public int readBits( int bits )
     {
-        assert bits > 0;
-        assert bits <= 32;
-        assert bitsRead + bits <= numBits;
+        // the contract lives in its own method so the hot path stays small
+        // enough for the JIT to inline: an assert's bytecode is carried even
+        // when -ea is absent, and it counts against inlining thresholds
+        assert checkReadBits( bits );
 
         // loads up to 7 bytes past the last data byte: the allocation contract covers this
         long window = (long) BitWriter.LONG_LE.get( data, (int) ( bitsRead >> 3 ) );
@@ -73,6 +80,14 @@ public final class BitReader
         bitsRead += bits;
 
         return output;
+    }
+
+    private boolean checkReadBits( int bits )
+    {
+        assert bits > 0;
+        assert bits <= 32;
+        assert bitsRead + bits <= numBits;
+        return true;
     }
 
     /**
@@ -99,12 +114,18 @@ public final class BitReader
     /** Read bytes from the bitpacked data. The bit index must be byte aligned. */
     public void readBytes( byte[] destination, int bytes )
     {
-        assert getAlignBits() == 0;
-        assert bitsRead + (long) bytes * 8 <= numBits;
+        assert checkReadBytes( bytes );
 
         System.arraycopy( data, (int) ( bitsRead >> 3 ), destination, 0, bytes );
 
         bitsRead += (long) bytes * 8;
+    }
+
+    private boolean checkReadBytes( int bytes )
+    {
+        assert getAlignBits() == 0;
+        assert bitsRead + (long) bytes * 8 <= numBits;
+        return true;
     }
 
     /** The number of zero pad bits an align would read right now, in [0,7]. */

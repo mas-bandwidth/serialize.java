@@ -11,6 +11,11 @@ import java.nio.ByteOrder;
  * Once the scratch fills to 64 bits it is stored to memory as a little-endian
  * qword; the bits that spilled past 64 carry over into the next scratch.
  *
+ * The hot state is two fields: the scratch word and the bit cursor. The
+ * scratch bit count and the store offset are derived from the cursor
+ * ({@code bitsWritten & 63} and the cursor's qword-aligned byte position),
+ * which keeps the write path small enough for the JIT to inline everywhere.
+ *
  * IMPORTANT: the buffer size must be a multiple of 8 bytes, because words are
  * stored to memory 8 bytes at a time. Bytes past the end of the written data
  * are only ever written as zeros.
@@ -23,8 +28,6 @@ public final class BitWriter
     private long scratch;
     private long numBits;
     private long bitsWritten;
-    private int wordIndex;
-    private int scratchBits;
 
     /**
      * Creates a bit writer over the given buffer.
@@ -44,15 +47,19 @@ public final class BitWriter
      */
     public void reset( byte[] data, int bytes )
     {
-        assert data != null;
-        assert ( bytes % 8 ) == 0;
-        assert bytes <= data.length;
+        assert checkReset( data, bytes );
         this.data = data;
         this.numBits = (long) bytes * 8;
         this.bitsWritten = 0;
-        this.wordIndex = 0;
         this.scratch = 0;
-        this.scratchBits = 0;
+    }
+
+    private static boolean checkReset( byte[] data, int bytes )
+    {
+        assert data != null;
+        assert ( bytes % 8 ) == 0;
+        assert bytes <= data.length;
+        return true;
     }
 
     /**
@@ -65,29 +72,32 @@ public final class BitWriter
     {
         long unsignedValue = value & 0xFFFFFFFFL;
 
+        // the contract lives in its own method so the hot path stays small
+        // enough for the JIT to inline: an assert's bytecode is carried even
+        // when -ea is absent, and it counts against inlining thresholds
+        assert checkWriteBits( unsignedValue, bits );
+
+        int scratchBits = (int) bitsWritten & 63;
+
+        scratch |= unsignedValue << scratchBits;
+
+        if ( scratchBits + bits >= 64 )
+        {
+            LONG_LE.set( data, (int) ( bitsWritten >>> 3 ) & ~7, scratch );
+            // recover the bits that spilled past 64. scratchBits + bits >= 64 with bits <= 32 implies the shift is in [1,32]
+            scratch = unsignedValue >>> ( 64 - scratchBits );
+        }
+
+        bitsWritten += bits;
+    }
+
+    private boolean checkWriteBits( long unsignedValue, int bits )
+    {
         assert bits > 0;
         assert bits <= 32;
         assert bitsWritten + bits <= numBits;
         assert unsignedValue <= ( ( 1L << bits ) - 1 );
-
-        scratch |= unsignedValue << scratchBits;
-
-        int newScratchBits = scratchBits + bits;
-
-        if ( newScratchBits >= 64 )
-        {
-            LONG_LE.set( data, wordIndex * 8, scratch );
-            wordIndex++;
-            // recover the bits that spilled past 64. newScratchBits >= 64 with bits <= 32 implies the shift is in [1,32]
-            scratch = unsignedValue >>> ( 64 - scratchBits );
-            scratchBits = newScratchBits - 64;
-        }
-        else
-        {
-            scratchBits = newScratchBits;
-        }
-
-        bitsWritten += bits;
+        return true;
     }
 
     /**
@@ -113,23 +123,19 @@ public final class BitWriter
      */
     public void writeBytes( byte[] source, int bytes )
     {
-        assert bytes >= 0;
-        assert bitsWritten + (long) bytes * 8 <= numBits;
-        assert ( bitsWritten % 8 ) == 0;                        // byte aligned
-        assert scratchBits == bitsWritten % 64;                 // mid-stream the scratch tracks the cursor
+        assert checkWriteBytes( bytes );
 
         // the head: the partial scratch word goes to the buffer whole — its high
         // bytes are zero, and the payload copy below overwrites exactly those.
-        if ( scratchBits != 0 )
+        if ( ( bitsWritten & 63 ) != 0 )
         {
-            LONG_LE.set( data, wordIndex * 8, scratch );
+            LONG_LE.set( data, (int) ( bitsWritten >>> 3 ) & ~7, scratch );
         }
 
         // the body: the whole payload, straight in at the byte cursor
         System.arraycopy( source, 0, data, (int) ( bitsWritten >> 3 ), bytes );
 
         bitsWritten += (long) bytes * 8;
-        wordIndex = (int) ( bitsWritten / 64 );
 
         // the tail: reload the trailing partial word into the scratch, masked to
         // its tail bits, so later writes pack into it exactly as if its bytes had
@@ -137,29 +143,33 @@ public final class BitWriter
         int tailBits = (int) ( bitsWritten % 64 );
         if ( tailBits != 0 )
         {
-            long word = (long) LONG_LE.get( data, wordIndex * 8 );
+            long word = (long) LONG_LE.get( data, (int) ( bitsWritten >>> 3 ) & ~7 );
             scratch = word & ( ( 1L << tailBits ) - 1 );
         }
         else
         {
             scratch = 0;
         }
-        scratchBits = tailBits;
+    }
+
+    private boolean checkWriteBytes( int bytes )
+    {
+        assert bytes >= 0;
+        assert bitsWritten + (long) bytes * 8 <= numBits;
+        assert ( bitsWritten % 8 ) == 0;                        // byte aligned
+        return true;
     }
 
     /**
      * Flush any remaining bits to memory. Call once after writing, or the
-     * last word of data will not reach the buffer.
+     * last word of data will not reach the buffer. Stateless and idempotent:
+     * it stores the partial scratch word and changes nothing.
      */
     public void flushBits()
     {
-        if ( scratchBits != 0 )
+        if ( ( bitsWritten & 63 ) != 0 )
         {
-            assert scratchBits < 64;
-            LONG_LE.set( data, wordIndex * 8, scratch );
-            scratch = 0;
-            scratchBits = 0;
-            wordIndex++;
+            LONG_LE.set( data, (int) ( bitsWritten >>> 3 ) & ~7, scratch );
         }
     }
 
