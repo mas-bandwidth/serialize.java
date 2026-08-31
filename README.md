@@ -97,7 +97,6 @@ JDK 21. A plain Makefile drives everything — no Maven, no Gradle:
 
 ```
 make test    # build the library and tests, run the suite with -ea
-make bench   # build and run the benchmark, default JVM flags, no -ea
 ```
 
 ## Testing
@@ -114,49 +113,7 @@ tier, and the fixed point shapes at every group count — plus a sabotage
 sweep proving every consumed bit of the golden stream is load bearing,
 refusal proofs for hostile input, and the measure bound.
 
-## Benchmark
-
-```
-make bench                      # the rows, human readable
-make bench BENCH_ARGS=--csv     # the same numbers as CSV: row,op,units,value
-```
-
-[bench/serialize/bench/Bench.java](bench/serialize/bench/Bench.java) is
-an operation-for-operation mirror of the family benchmark (serialize.c's
-`bench.c`, itself a mirror of the C++ `bench.cpp`): the raw bitpacker,
-the representative stream packet through write, read and measure, and
-three packet shapes, at the same iteration counts with the same
-LCG-driven inputs and best-of-five-trials discipline. Every row is
-golden gated before any row is timed — the exact buffers the loops write
-are verified byte for byte against pins produced by the C reference's
-own bench data paths, and a bench that fails its goldens reports
-nothing. JVM discipline is by hand, zero dependencies: per-shape loop
-methods so type profiles stay monomorphic, warmup trials to full C2
-compilation before the timed trials, and a published sink so no loop can
-be proven unobservable. `BENCH_BITPACKER_PASSES` and
-`BENCH_STREAM_PACKETS` scale the loops for linearity checks.
-
-The timed run uses default JVM flags and no `-ea`, so the number
-reported is the number a user gets. Current numbers at the family scale
-(4096 bitpacker passes, 1,000,000 packets per stream row), measured on a
-MacBook Air (Apple Silicon) — only numbers from a quiet machine are
-meaningful, and only as ratios between family legs measured back to back
-on the same machine:
-
-```
-bitpacker write:    2049.4 MB/s
-bitpacker read:     1674.5 MB/s
-stream write:       3024.1 MB/s  (64.7 M packets/s)
-stream read:        2828.0 MB/s  (60.5 M packets/s)
-stream measure:               17531.3 M packets/s
-
-int packet   (runtime):       write:   63.7 M packets/s   read:   57.2 M packets/s
-bits packet  (runtime):       write:   71.7 M packets/s   read:   69.7 M packets/s
-mixed packet (runtime):       write:   52.6 M packets/s   read:   54.6 M packets/s
-```
-
-(The measure row prices packets without touching memory; that it is
-nearly free is the property worth tracking, not the magnitude.)
+Benchmarking for the serialize family lives in [mas-bandwidth/schema](https://github.com/mas-bandwidth/schema)'s data-driven bench, which measures the generated codecs across every language on one corpus.
 
 ## License
 
