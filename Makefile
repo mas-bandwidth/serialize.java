@@ -7,13 +7,11 @@ JAVA     := $(JDK_HOME)/bin/java
 
 SRC       := $(wildcard src/serialize/*.java)
 TEST_SRC  := $(wildcard test/serialize/tests/*.java)
-BENCH_SRC := $(wildcard bench/serialize/bench/*.java)
 
-CLASSES       := build/classes
-TEST_CLASSES  := build/test-classes
-BENCH_CLASSES := build/bench-classes
+CLASSES      := build/classes
+TEST_CLASSES := build/test-classes
 
-.PHONY: all test bench clean
+.PHONY: all test clean
 
 all: test
 
@@ -31,16 +29,6 @@ $(TEST_CLASSES)/.stamp: $(TEST_SRC) $(CLASSES)/.stamp
 # mirroring the family's debug/release split
 test: $(TEST_CLASSES)/.stamp
 	$(JAVA) -ea -cp $(CLASSES):$(TEST_CLASSES) serialize.tests.AllTests
-
-$(BENCH_CLASSES)/.stamp: $(BENCH_SRC) $(CLASSES)/.stamp
-	$(JAVAC) --release 17 -Xlint:all -Werror -cp $(CLASSES) -d $(BENCH_CLASSES) $(BENCH_SRC)
-	@touch $@
-
-# the bench runs WITHOUT -ea and with default JVM flags: the number a user
-# gets. BENCH_ARGS=--csv for machine-readable rows; see bench/serialize/bench/Bench.java
-# for the env-overridable iteration counts.
-bench: $(BENCH_CLASSES)/.stamp
-	$(JAVA) -cp $(CLASSES):$(BENCH_CLASSES) serialize.bench.Bench $(BENCH_ARGS)
 
 clean:
 	rm -rf build
