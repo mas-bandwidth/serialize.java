@@ -45,7 +45,10 @@ then compile and run against it with `-cp serialize.jar`. Write-side contracts
 are `assert` statements, so run with `-ea` while developing and without it in
 release — the two shapes the test suite covers.
 
-Pin a release tag rather than tracking `main`; v1.1.0 is current.
+Pin a release tag rather than tracking `main`. The newest is on the
+[releases page](https://github.com/mas-bandwidth/serialize.java/releases): a
+release states a format version, and two endpoints interoperate only when they
+carry the same one.
 
 ## The surface
 
