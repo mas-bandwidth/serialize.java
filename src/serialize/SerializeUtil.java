@@ -10,6 +10,9 @@ public final class SerializeUtil
 {
     private SerializeUtil() {}
 
+    /** The library version, matching the release tag. */
+    public static final String VERSION = "1.1.0";
+
     /**
      * The number of bits required to serialize an integer in [min,max].
      * The subtraction wraps in the unsigned 32-bit domain, so the full

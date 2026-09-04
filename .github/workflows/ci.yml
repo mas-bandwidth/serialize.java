@@ -12,4 +12,50 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
+      # the checked shape: write-side contracts are asserts and run here
       - run: make test JDK_HOME="$JAVA_HOME"
+      # the release shape: the same suite with assertions off, proving every
+      # read-side refusal binds without them
+      - run: make test-release JDK_HOME="$JAVA_HOME"
+
+  spec-sync:
+    name: STANDARD.md and the corpus match upstream
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # STANDARD.md here is a VERBATIM VENDORED COPY of the wire-format
+      # specification that lives in mas-bandwidth/serialize. This job fails if the
+      # two have diverged.
+      #
+      # Why vendor rather than link: an implementer wants the normative text
+      # beside the implementation, at the revision they are reading. Why check:
+      # a duplicated normative document is the same failure as a duplicated
+      # constant, except it drifts silently and the ports are what break.
+      #
+      # If this fails, the upstream spec changed. Read the diff, port whatever
+      # it implies, then copy the new file across in the same commit.
+      - name: Compare STANDARD.md against mas-bandwidth/serialize
+        run: |
+          curl -fsSL -o /tmp/upstream-STANDARD.md \
+            https://raw.githubusercontent.com/mas-bandwidth/serialize/main/STANDARD.md
+          echo "upstream: mas-bandwidth/serialize@$(git ls-remote https://github.com/mas-bandwidth/serialize.git refs/heads/main | cut -f1)"
+          if ! diff -u /tmp/upstream-STANDARD.md STANDARD.md; then
+            echo "::error::STANDARD.md has diverged from mas-bandwidth/serialize"
+            exit 1
+          fi
+          echo "STANDARD.md matches upstream"
+
+      # conformance/ is the shared corpus, vendored the same way and for the
+      # same reason: the suite runs every vector in it, and a corpus that has
+      # drifted is a suite testing the wrong contract. The whole directory is
+      # compared, so a vector file added upstream fails here rather than going
+      # unrun.
+      - name: Compare conformance/ against mas-bandwidth/serialize
+        run: |
+          git clone --quiet --depth 1 https://github.com/mas-bandwidth/serialize.git /tmp/upstream-serialize
+          if ! diff -ru /tmp/upstream-serialize/conformance conformance; then
+            echo "::error::conformance/ has diverged from mas-bandwidth/serialize"
+            exit 1
+          fi
+          echo "conformance/ matches upstream"

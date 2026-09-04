@@ -206,6 +206,27 @@ final class Int128Tests
             check( !reader.serializeInt128( readBack, Int128Value.ZERO, Int128Value.fromLong( 200 ) ), "255 in [0,200] refused" );
         } );
 
+        test( "int128: a degenerate range is legal and costs zero bits", () -> {
+            // the corpus vector's bounds: 2^100 + 7, min == max
+            Int128Value bound = new Int128Value( 0x0000000000000010L, 0x0000000000000007L );
+
+            byte[] buffer = new byte[16 + 8];
+            WriteStream writer = new WriteStream( buffer, 16 );
+            check( writer.serializeInt128( new Ref<>( bound ), bound, bound ) );
+            writer.flush();
+            checkEqual( writer.getBitsProcessed(), 0, "the writer emits nothing" );
+
+            MeasureStream measure = new MeasureStream();
+            check( measure.serializeInt128( new Ref<>( bound ), bound, bound ) );
+            checkEqual( measure.getBitsProcessed(), 0, "the measure adds zero" );
+
+            ReadStream reader = new ReadStream( new byte[8], 0 );           // an empty stream carries it
+            Ref<Int128Value> readBack = new Ref<>( Int128Value.ZERO );
+            check( reader.serializeInt128( readBack, bound, bound ) );
+            check( readBack.value.equals( bound ), "the value comes from min" );
+            checkEqual( reader.getBitsProcessed(), 0, "the reader consumes nothing" );
+        } );
+
         test( "int128: a truncated buffer refuses rather than reading past the end", () -> {
             ReadStream reader = new ReadStream( new byte[32 + 8], 4 );      // 32 bits available, 128 required
             Ref<Int128Value> readBack = new Ref<>( Int128Value.ZERO );

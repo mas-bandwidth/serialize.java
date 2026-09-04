@@ -146,17 +146,23 @@ public final class WriteStream implements BitStream
     @Override
     public boolean serializeInt128( Ref<Int128Value> value, Int128Value min, Int128Value max )
     {
-        assert min.compareTo( max ) < 0;
+        assert min.compareTo( max ) <= 0;
         assert value.value.compareTo( min ) >= 0;
         assert value.value.compareTo( max ) <= 0;
         int bits = SerializeUtil.bitsRequired128( min.toUnsigned(), max.toUnsigned() );
+        if ( bits == 0 )
+        {
+            return true;                    // degenerate range: nothing goes on the wire
+        }
         // subtract in the unsigned domain: wraps when the range is wider than 2^127
         UInt128Value offset = value.value.toUnsigned().subtract( min.toUnsigned() );
         writeGroups128( offset, bits );
         return true;
     }
 
-    // 32-bit groups, least significant first: the shared wide-value convention
+    // 32-bit groups, least significant first, for a width of 1 to 128 bits: the
+    // shared wide-value convention. The caller routes the zero-bit degenerate
+    // range away, so every group carries 1 to 32 bits.
     private void writeGroups128( UInt128Value offset, int bits )
     {
         int group0 = (int) offset.lo;
@@ -309,8 +315,8 @@ public final class WriteStream implements BitStream
     @Override
     public boolean serializeIntRelative( int previous, IntRef current )
     {
+        assert previous >= 0;               // the domain: 0 to 2^31 - 1, previous and current alike
         assert previous < current.value;
-        // subtract in the unsigned domain: wraps when the gap is wider than 2^31
         int difference = current.value - previous;
 
         boolean oneBit = difference == 1;

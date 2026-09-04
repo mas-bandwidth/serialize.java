@@ -65,36 +65,68 @@ final class IntRelativeTests
             check( !reader.serializeIntRelative( 100, current ), "50 after 100 refused" );
         } );
 
-        test( "intRelative: gaps wider than 2^31 travel through the unsigned domain", () -> {
-            byte[] buffer = new byte[8 + 8];
-            WriteStream writer = new WriteStream( buffer, 8 );
-            int previous = -1000;
-            int written = Integer.MAX_VALUE;
-            check( writer.serializeIntRelative( previous, new IntRef( written ) ) );
-            writer.flush();
+        test( "intRelative: the whole domain travels, from zero to the top", () -> {
+            // { previous, current } — the widest gap the domain allows, and its top edge
+            int[][] cases = {
+                { 0, Integer.MAX_VALUE },                                   // the absolute tier, end to end
+                { Integer.MAX_VALUE - 1, Integer.MAX_VALUE },               // the one-bit tier at the top
+                { Integer.MAX_VALUE - 6, Integer.MAX_VALUE },               // a bounded tier at the top
+            };
+            for ( int[] c : cases )
+            {
+                byte[] buffer = new byte[8 + 8];
+                WriteStream writer = new WriteStream( buffer, 8 );
+                check( writer.serializeIntRelative( c[0], new IntRef( c[1] ) ) );
+                writer.flush();
 
-            ReadStream reader = new ReadStream( buffer, 8 );
-            IntRef current = new IntRef();
-            check( reader.serializeIntRelative( previous, current ) );
-            checkEqual( current.value, written, "round trip across a >2^31 gap" );
+                MeasureStream measure = new MeasureStream();
+                check( measure.serializeIntRelative( c[0], new IntRef( c[1] ) ) );
+                checkEqual( measure.getBitsProcessed(), writer.getBitsProcessed(), "measure agrees" );
+
+                ReadStream reader = new ReadStream( buffer, (int) writer.getBytesProcessed() );
+                IntRef current = new IntRef();
+                check( reader.serializeIntRelative( c[0], current ) );
+                checkEqual( current.value, c[1], "round trip " + c[0] + " -> " + c[1] );
+            }
         } );
 
-        test( "intRelative: reconstruction near INT32_MAX wraps in the unsigned domain", () -> {
-            int[] differences = { 1, 5 };
+        test( "intRelative: a reconstruction past the domain is refused in every tier", () -> {
+            // the same bytes decode one step lower: the refusal is on the
+            // reconstructed value, not on the byte pattern
+            int[] differences = { 1, 5, 20, 200, 3000, 50000 };
             for ( int difference : differences )
             {
                 byte[] buffer = new byte[8 + 8];
                 WriteStream writer = new WriteStream( buffer, 8 );
-                int previousWrite = 10;
-                check( writer.serializeIntRelative( previousWrite, new IntRef( previousWrite + difference ) ) );
+                check( writer.serializeIntRelative( 10, new IntRef( 10 + difference ) ) );
                 writer.flush();
+                int bytes = (int) writer.getBytesProcessed();
 
-                ReadStream reader = new ReadStream( buffer, 8 );
-                int previous = Integer.MAX_VALUE;                           // previous + difference exceeds INT32_MAX
-                IntRef current = new IntRef();
-                check( reader.serializeIntRelative( previous, current ) );
-                checkEqual( current.value, Integer.MAX_VALUE + difference, "wrapped reconstruction" );
+                int overflowing = Integer.MAX_VALUE - difference + 1;       // reconstructs one past the domain
+                ReadStream reader = new ReadStream( buffer, bytes );
+                IntRef current = new IntRef( 0x5E5E5E5E );
+                check( !reader.serializeIntRelative( overflowing, current ), "difference " + difference + " past the domain refused" );
+                checkEqual( current.value, 0x5E5E5E5E, "the refusal wrote nothing" );
+
+                ReadStream inside = new ReadStream( buffer, bytes );
+                IntRef accepted = new IntRef();
+                check( inside.serializeIntRelative( overflowing - 1, accepted ), "difference " + difference + " one step inside accepted" );
+                checkEqual( accepted.value, Integer.MAX_VALUE, "the twin decodes to the domain top" );
             }
+        } );
+
+        test( "intRelative: the absolute tier reads its 32 raw bits unsigned", () -> {
+            // a top-bit-set absolute value is outside the domain, whatever previous is
+            byte[] buffer = new byte[8 + 8];
+            WriteStream writer = new WriteStream( buffer, 8 );
+            check( writer.serializeBits( new IntRef( 0 ), 6 ) );            // six false flags
+            check( writer.serializeBits( new IntRef( 0x80000000 ), 32 ) );  // 2^31, one past the domain
+            writer.flush();
+
+            ReadStream reader = new ReadStream( buffer, (int) writer.getBytesProcessed() );
+            IntRef current = new IntRef( 0x5E5E5E5E );
+            check( !reader.serializeIntRelative( 100, current ), "top bit set refused" );
+            checkEqual( current.value, 0x5E5E5E5E, "the refusal wrote nothing" );
         } );
 
         test( "intRelative: a doctored tier payload out of range refuses", () -> {

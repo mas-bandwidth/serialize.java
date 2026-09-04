@@ -9,7 +9,9 @@ package serialize;
  * Every method returns false on refusal. On the write and measure sides the
  * data is trusted and misuse is caught by debug asserts only (run with -ea);
  * on the read side every refusal rule of STANDARD.md binds in every mode and
- * hostile bytes never throw.
+ * hostile bytes never throw. A refused read leaves its scalar destination
+ * unwritten and is terminal for the stream — the exception is a caller-owned
+ * buffer, whose contents are unspecified after a refusal.
  */
 public interface BitStream
 {
@@ -31,7 +33,11 @@ public interface BitStream
     /** A ranged 64-bit integer: value - min in bitsRequired64(min,max) bits, low 32-bit group first past 32 bits. */
     boolean serializeInt64( LongRef value, long min, long max );
 
-    /** A ranged 128-bit integer: the offset in 32-bit groups from least significant upward. min must be strictly less than max. */
+    /**
+     * A ranged 128-bit integer: the offset in 32-bit groups from least
+     * significant upward. min <= max, and a degenerate min == max range costs
+     * zero bits — nothing on the wire, the value taken from min.
+     */
     boolean serializeInt128( Ref<Int128Value> value, Int128Value min, Int128Value max );
 
     /** An unsigned 8-bit integer: 8 raw bits. */
@@ -77,7 +83,12 @@ public interface BitStream
      */
     boolean serializeWideString( Ref<String> value, int bufferSize );
 
-    /** The strictly increasing relative-integer ladder. current must exceed previous. */
+    /**
+     * The strictly increasing relative-integer ladder over the domain 0 to
+     * 2^31 - 1 inclusive. current must exceed previous, and both lie in the
+     * domain; a read whose reconstruction leaves the domain or fails to exceed
+     * previous is refused.
+     */
     boolean serializeIntRelative( int previous, IntRef current );
 
     /**

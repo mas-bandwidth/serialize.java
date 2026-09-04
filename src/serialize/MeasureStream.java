@@ -104,7 +104,7 @@ public final class MeasureStream implements BitStream
     @Override
     public boolean serializeInt128( Ref<Int128Value> value, Int128Value min, Int128Value max )
     {
-        assert min.compareTo( max ) < 0;
+        assert min.compareTo( max ) <= 0;
         assert value.value.compareTo( min ) >= 0;
         assert value.value.compareTo( max ) <= 0;
         bitsWritten += SerializeUtil.bitsRequired128( min.toUnsigned(), max.toUnsigned() );
@@ -211,6 +211,7 @@ public final class MeasureStream implements BitStream
     @Override
     public boolean serializeIntRelative( int previous, IntRef current )
     {
+        assert previous >= 0;               // the domain: 0 to 2^31 - 1, previous and current alike
         assert previous < current.value;
         int difference = current.value - previous;
 
