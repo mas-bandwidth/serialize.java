@@ -19,6 +19,34 @@ which CI checks for drift — is the authority on every byte.
 
 Version 1.1.0 (`SerializeUtil.VERSION`).
 
+## Getting it
+
+serialize.java ships as source today. The implementation is ready and the
+package is not yet published: there is no artifact on Maven Central under any
+coordinate, and there is no Maven or Gradle build here to produce one.
+Publishing it is a separate round.
+
+Fifteen files under `src/serialize/`, zero dependencies, Java 17 language
+level. Take it either way:
+
+**Copy the package in** — drop `src/serialize/` into your own source tree and
+it compiles with the rest of it, no build changes at all.
+
+**Build a jar** — the same javac line the Makefile uses, against any JDK 17 or
+newer:
+
+```sh
+git clone https://github.com/mas-bandwidth/serialize.java.git
+javac --release 17 -d classes serialize.java/src/serialize/*.java
+jar cf serialize.jar -C classes serialize
+```
+
+then compile and run against it with `-cp serialize.jar`. Write-side contracts
+are `assert` statements, so run with `-ea` while developing and without it in
+release — the two shapes the test suite covers.
+
+Pin a release tag rather than tracking `main`; v1.1.0 is current.
+
 ## The surface
 
 One package, `serialize`, zero dependencies. The complete family
