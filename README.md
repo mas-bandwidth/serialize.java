@@ -12,8 +12,12 @@ family, wire compatible with the
 [Elixir](https://github.com/mas-bandwidth/serialize.elixir) libraries —
 the same values produce the same bytes in every implementation, so a
 stream written by one reads in any other.
-[STANDARD.md](https://github.com/mas-bandwidth/serialize/blob/main/STANDARD.md)
-in the C++ reference is the authority on every byte.
+[STANDARD.md](STANDARD.md) — a verbatim vendored copy of the
+specification in
+[mas-bandwidth/serialize](https://github.com/mas-bandwidth/serialize),
+which CI checks for drift — is the authority on every byte.
+
+Version 1.1.0 (`SerializeUtil.VERSION`).
 
 ## The surface
 
@@ -31,7 +35,7 @@ primitive-specialized holder cells (`IntRef`, `LongRef`, `BoolRef`,
 - **Ranged integers**: `serializeInt`, `serializeInt64`,
   `serializeInt128` — offset from min in exactly the bit length of the
   range, unsigned-domain arithmetic so ranges wider than 2^63/2^127 are
-  exact, zero bits for a degenerate range.
+  exact, zero bits for a degenerate `min == max` range on every width.
 - **Unsigned helpers and bool**: `serializeUint8` / `16` / `32` / `64`,
   `serializeUint128` (the `UInt128Value` pair), `serializeBool`.
 - **Floats**: `serializeFloat` and `serializeDouble`, bit transparent
@@ -43,7 +47,8 @@ primitive-specialized holder cells (`IntRef`, `LongRef`, `BoolRef`,
   validated on read in every mode); `serializeWideString` (one 32-bit
   group per UTF-16 code unit, no alignment anywhere).
 - **The relative integer**: `serializeIntRelative` — the flag ladder for
-  strictly increasing uint32 sequences, one bit for a difference of 1.
+  strictly increasing sequences over the domain 0 to 2^31 - 1, one bit
+  for a difference of 1, every tier's reconstruction checked on read.
 - **Fixed point**: `serializeFixed` at 8/16/32/64-bit storage and
   `serializeFixed128` at 128-bit storage — Q formats, the raw scaled
   integer as an exact ranged offset, byte identical to `serializeInt64`
@@ -96,22 +101,33 @@ language level (`javac --release 17`), built and tested on the pinned
 JDK 21. A plain Makefile drives everything — no Maven, no Gradle:
 
 ```
-make test    # build the library and tests, run the suite with -ea
+make          # both shapes below
+make test          # the suite with assertions on, the checked shape
+make test-release  # the same suite with assertions off, the release shape
 ```
 
 ## Testing
 
 `make test` runs the suite with assertions enabled (`-ea`): writer
-contracts are `assert` statements, so the tested shape is the checked
-shape, and a plain `java` invocation without `-ea` is the release shape
-— asserts compile to nothing at runtime, matching the C++ library's
-`serialize_assert` under `NDEBUG`. The suite pins the family's golden
-vectors byte for byte — the golden wire message covering every operation
-class, the discriminating compressed-float vectors (bit patterns, not
-tolerances), the string and wide-string pins, every relative-integer
-tier, and the fixed point shapes at every group count — plus a sabotage
-sweep proving every consumed bit of the golden stream is load bearing,
-refusal proofs for hostile input, and the measure bound.
+contracts are `assert` statements, so this is the checked shape.
+`make test-release` runs the same suite with assertions disabled — the
+release shape, where asserts compile to nothing at runtime, matching the
+C++ library's `serialize_assert` under `NDEBUG` — which is what proves
+the read side's refusals are checks rather than asserts. Both are CI
+gates.
+
+The suite runs every vector in [`conformance/`](conformance), the
+family's shared corpus, vendored from mas-bandwidth/serialize and
+checked for drift by CI: an accepted vector must decode to the stated
+value and consume the stated bits, a refused vector must be refused, and
+nothing regenerates its own expectations. It also pins the family's
+golden vectors byte for byte — the golden wire message covering every
+operation class, the discriminating compressed-float vectors (bit
+patterns, not tolerances), the string and wide-string pins, every
+relative-integer tier, and the fixed point shapes at every group count —
+plus a sabotage sweep proving every consumed bit of the golden stream is
+load bearing, refusal and terminality proofs for hostile input, and the
+measure bound.
 
 Benchmarking for the serialize family lives in [mas-bandwidth/schema](https://github.com/mas-bandwidth/schema)'s data-driven bench, which measures the generated codecs across every language on one corpus.
 

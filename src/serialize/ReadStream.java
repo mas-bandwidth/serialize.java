@@ -8,12 +8,27 @@ import java.nio.charset.StandardCharsets;
  *
  * The read side faces untrusted data: every refusal rule of STANDARD.md
  * binds here in every build mode. Out-of-range or truncated input returns
- * false; hostile bytes never throw. A failed read is terminal for the
- * stream — nothing after the failing operation has a defined position.
+ * false; hostile bytes never throw.
+ *
+ * A refused read leaves its scalar destination unwritten — the holder cell
+ * holds what it held before the call — except for a caller-owned buffer,
+ * whose contents are unspecified after a refusal.
+ *
+ * A failed read is terminal: nothing after the failing operation has a
+ * defined position, so the stream latches. Every read after the first
+ * refusal returns false, consuming no bits and writing no destination, until
+ * {@link #reset} points the stream at data again.
  */
 public final class ReadStream implements BitStream
 {
     private final BitReader reader;
+
+    /**
+     * The failure latch. The first refused read sets it, every later read on
+     * this stream refuses without consuming a bit or writing a destination,
+     * and only {@link #reset} clears it.
+     */
+    private boolean failed;
 
     /**
      * @param buffer the buffer to read from. The array must extend at least
@@ -36,11 +51,26 @@ public final class ReadStream implements BitStream
     public void reset( byte[] buffer, int bytes )
     {
         reader.reset( buffer, bytes );
+        failed = false;
     }
 
     @Override public boolean isWriting() { return false; }
 
     @Override public boolean isReading() { return true; }
+
+    /** Has a read on this stream failed? Every read after the first refusal refuses. */
+    public boolean isFailed()
+    {
+        return failed;
+    }
+
+    // Sets the latch and reports the refusal in one expression, so a refusal
+    // reads as `return fail();` wherever it occurs.
+    private boolean fail()
+    {
+        failed = true;
+        return false;
+    }
 
     // the contracts of the hot operations live in their own methods so the
     // hot bodies stay small enough for the JIT to inline: an assert's
@@ -64,10 +94,11 @@ public final class ReadStream implements BitStream
     @Override
     public boolean serializeBits( IntRef value, int bits )
     {
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
         assert checkBits32( bits );
         if ( reader.wouldReadPastEnd( bits ) )
         {
-            return false;
+            return fail();
         }
         value.value = reader.readBits( bits );
         return true;
@@ -76,12 +107,13 @@ public final class ReadStream implements BitStream
     @Override
     public boolean serializeBits64( LongRef value, int bits )
     {
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
         assert checkBits64( bits );
         if ( bits <= 32 )
         {
             if ( reader.wouldReadPastEnd( bits ) )
             {
-                return false;
+                return fail();
             }
             value.value = Integer.toUnsignedLong( reader.readBits( bits ) );
         }
@@ -91,12 +123,12 @@ public final class ReadStream implements BitStream
             // matching the reference macro's composition from two 32-bit operations
             if ( reader.wouldReadPastEnd( 32 ) )
             {
-                return false;
+                return fail();
             }
             long lo = Integer.toUnsignedLong( reader.readBits( 32 ) );
             if ( reader.wouldReadPastEnd( bits - 32 ) )
             {
-                return false;
+                return fail();
             }
             long hi = Integer.toUnsignedLong( reader.readBits( bits - 32 ) );
             value.value = ( hi << 32 ) | lo;
@@ -107,6 +139,7 @@ public final class ReadStream implements BitStream
     @Override
     public boolean serializeInt( IntRef value, int min, int max )
     {
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
         assert min <= max;
         int bits = SerializeUtil.bitsRequired( min, max );
         if ( bits == 0 )
@@ -116,12 +149,12 @@ public final class ReadStream implements BitStream
         }
         if ( reader.wouldReadPastEnd( bits ) )
         {
-            return false;
+            return fail();
         }
         int unsignedValue = reader.readBits( bits );
         if ( Integer.compareUnsigned( unsignedValue, max - min ) > 0 )
         {
-            return false;
+            return fail();
         }
         // add in the unsigned domain: wraps when the range is wider than 2^31
         value.value = unsignedValue + min;
@@ -131,6 +164,7 @@ public final class ReadStream implements BitStream
     @Override
     public boolean serializeInt64( LongRef value, long min, long max )
     {
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
         assert min <= max;
         int bits = SerializeUtil.bitsRequired64( min, max );
         if ( bits == 0 )
@@ -141,7 +175,7 @@ public final class ReadStream implements BitStream
         // one truncation check for the whole value, matching the reference stream method
         if ( reader.wouldReadPastEnd( bits ) )
         {
-            return false;
+            return fail();
         }
         long unsignedValue;
         if ( bits <= 32 )
@@ -156,7 +190,7 @@ public final class ReadStream implements BitStream
         }
         if ( Long.compareUnsigned( unsignedValue, max - min ) > 0 )
         {
-            return false;
+            return fail();
         }
         // add in the unsigned domain: wraps when the range is wider than 2^63
         value.value = unsignedValue + min;
@@ -166,27 +200,35 @@ public final class ReadStream implements BitStream
     @Override
     public boolean serializeInt128( Ref<Int128Value> value, Int128Value min, Int128Value max )
     {
-        assert min.compareTo( max ) < 0;
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
+        assert min.compareTo( max ) <= 0;
         UInt128Value unsignedMin = min.toUnsigned();
         UInt128Value unsignedMax = max.toUnsigned();
         int bits = SerializeUtil.bitsRequired128( unsignedMin, unsignedMax );
+        if ( bits == 0 )
+        {
+            value.value = min;              // degenerate range: the value IS the range
+            return true;
+        }
         // one truncation check for the whole value, matching the reference stream method
         if ( reader.wouldReadPastEnd( bits ) )
         {
-            return false;
+            return fail();
         }
         UInt128Value offset = readGroups128( bits );
         if ( offset.compareUnsigned( unsignedMax.subtract( unsignedMin ) ) > 0 )
         {
-            return false;
+            return fail();
         }
         // add in the unsigned domain: wraps when the range is wider than 2^127
         value.value = Int128Value.fromUnsigned( offset.add( unsignedMin ) );
         return true;
     }
 
-    // 32-bit groups, least significant first. The caller has already priced the
-    // whole value against the stream end.
+    // 32-bit groups, least significant first, for a width of 1 to 128 bits.
+    // The caller has already priced the whole value against the stream end and
+    // has routed the zero-bit degenerate range away: the bit primitive reads
+    // 1 to 32 bits per group.
     private UInt128Value readGroups128( int bits )
     {
         long group0 = 0;
@@ -245,15 +287,16 @@ public final class ReadStream implements BitStream
     @Override
     public boolean serializeUint128( Ref<UInt128Value> value )
     {
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
         // the low 64-bit half first, then the high half — composed from 32-bit
         // groups with per-group truncation checks, matching the reference macro
-        if ( reader.wouldReadPastEnd( 32 ) ) return false;
+        if ( reader.wouldReadPastEnd( 32 ) ) return fail();
         long a = Integer.toUnsignedLong( reader.readBits( 32 ) );
-        if ( reader.wouldReadPastEnd( 32 ) ) return false;
+        if ( reader.wouldReadPastEnd( 32 ) ) return fail();
         long b = Integer.toUnsignedLong( reader.readBits( 32 ) );
-        if ( reader.wouldReadPastEnd( 32 ) ) return false;
+        if ( reader.wouldReadPastEnd( 32 ) ) return fail();
         long c = Integer.toUnsignedLong( reader.readBits( 32 ) );
-        if ( reader.wouldReadPastEnd( 32 ) ) return false;
+        if ( reader.wouldReadPastEnd( 32 ) ) return fail();
         long d = Integer.toUnsignedLong( reader.readBits( 32 ) );
         value.value = new UInt128Value( ( d << 32 ) | c, ( b << 32 ) | a );
         return true;
@@ -262,9 +305,10 @@ public final class ReadStream implements BitStream
     @Override
     public boolean serializeBool( BoolRef value )
     {
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
         if ( reader.wouldReadPastEnd( 1 ) )
         {
-            return false;
+            return fail();
         }
         value.value = reader.readBits( 1 ) != 0;
         return true;
@@ -273,9 +317,10 @@ public final class ReadStream implements BitStream
     @Override
     public boolean serializeFloat( FloatRef value )
     {
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
         if ( reader.wouldReadPastEnd( 32 ) )
         {
-            return false;
+            return fail();
         }
         // bit transparent: the read returns exactly the bits read — NaN payloads,
         // signaling NaNs, infinities, negative zero and denormals all pass through
@@ -286,16 +331,17 @@ public final class ReadStream implements BitStream
     @Override
     public boolean serializeDouble( DoubleRef value )
     {
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
         // two 32-bit groups with per-group truncation checks, matching the
         // reference macro's composition
         if ( reader.wouldReadPastEnd( 32 ) )
         {
-            return false;
+            return fail();
         }
         long lo = Integer.toUnsignedLong( reader.readBits( 32 ) );
         if ( reader.wouldReadPastEnd( 32 ) )
         {
-            return false;
+            return fail();
         }
         long hi = Integer.toUnsignedLong( reader.readBits( 32 ) );
         value.value = Double.longBitsToDouble( ( hi << 32 ) | lo );
@@ -305,18 +351,19 @@ public final class ReadStream implements BitStream
     @Override
     public boolean serializeCompressedFloat( FloatRef value, float min, float max, float resolution )
     {
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
         long maxIntegerValue = SerializeUtil.compressedFloatMaxIntegerValue( min, max, resolution );
         int bits = SerializeUtil.bitsRequired( 0, (int) maxIntegerValue );
         float delta = max - min;
         if ( reader.wouldReadPastEnd( bits ) )
         {
-            return false;
+            return fail();
         }
         int integerValue = reader.readBits( bits );
         // reject an integer above maxIntegerValue smuggled into the bit headroom
         if ( Integer.toUnsignedLong( integerValue ) > maxIntegerValue )
         {
-            return false;
+            return fail();
         }
         value.value = SerializeUtil.compressedFloatReadValue( integerValue, maxIntegerValue, delta, min );
         return true;
@@ -325,18 +372,19 @@ public final class ReadStream implements BitStream
     @Override
     public boolean serializeBytes( byte[] data, int bytes )
     {
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
         if ( bytes < 0 )
         {
-            return false;
+            return fail();
         }
         if ( !serializeAlign() )
         {
-            return false;
+            return fail();
         }
         // compare in bytes rather than bits, consistent with the reference's bookkeeping
         if ( bytes > reader.getBitsRemaining() / 8 )
         {
-            return false;
+            return fail();
         }
         reader.readBytes( data, bytes );
         return true;
@@ -345,28 +393,34 @@ public final class ReadStream implements BitStream
     @Override
     public boolean serializeAlign()
     {
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
         int alignBits = reader.getAlignBits();
         if ( reader.wouldReadPastEnd( alignBits ) )
         {
-            return false;
+            return fail();
         }
-        return reader.readAlign();
+        if ( !reader.readAlign() )
+        {
+            return fail();                  // the padding was not zero
+        }
+        return true;
     }
 
     @Override
     public boolean serializeString( Ref<String> value, int bufferSize )
     {
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
         // the length, over [0, bufferSize-1]
         IntRef length = new IntRef();
         if ( !serializeInt( length, 0, bufferSize - 1 ) )
         {
-            return false;
+            return fail();
         }
         // the bytes, which align
         byte[] utf8 = new byte[length.value];
         if ( !serializeBytes( utf8, length.value ) )
         {
-            return false;
+            return fail();
         }
         // STANDARD.md, "Readers must refuse malformed string payloads".
         // Interior NUL first: a zero byte among the transmitted bytes gives the
@@ -376,12 +430,12 @@ public final class ReadStream implements BitStream
         {
             if ( utf8[i] == 0 )
             {
-                return false;
+                return fail();
             }
         }
         if ( !SerializeUtil.isValidUtf8( utf8, length.value ) )
         {
-            return false;
+            return fail();
         }
         value.value = new String( utf8, StandardCharsets.UTF_8 );
         return true;
@@ -390,10 +444,11 @@ public final class ReadStream implements BitStream
     @Override
     public boolean serializeWideString( Ref<String> value, int bufferSize )
     {
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
         IntRef length = new IntRef();
         if ( !serializeInt( length, 0, bufferSize - 1 ) )
         {
-            return false;
+            return fail();
         }
         // each group is one UTF-16 code unit, and malformed payloads are refused
         // in every build mode: a group above 0xFFFF is not a code unit, an
@@ -409,22 +464,22 @@ public final class ReadStream implements BitStream
         {
             if ( reader.wouldReadPastEnd( 32 ) )
             {
-                return false;
+                return fail();
             }
             int character = reader.readBits( 32 );
             if ( Integer.compareUnsigned( character, 0xFFFF ) > 0 )
             {
-                return false;                   // not a UTF-16 code unit: nothing conforming emits one
+                return fail();                   // not a UTF-16 code unit: nothing conforming emits one
             }
             if ( character == 0 )
             {
-                return false;                   // interior NUL: the two-lengths smuggling primitive
+                return fail();                   // interior NUL: the two-lengths smuggling primitive
             }
             if ( havePending )
             {
                 if ( character < 0xDC00 || character > 0xDFFF )
                 {
-                    return false;               // high surrogate without its low
+                    return fail();               // high surrogate without its low
                 }
                 output[outputIndex++] = pending;
                 output[outputIndex++] = (char) character;
@@ -433,7 +488,7 @@ public final class ReadStream implements BitStream
             }
             if ( character >= 0xDC00 && character <= 0xDFFF )
             {
-                return false;                   // low surrogate with no high before it
+                return fail();                   // low surrogate with no high before it
             }
             if ( character >= 0xD800 && character <= 0xDBFF )
             {
@@ -445,7 +500,7 @@ public final class ReadStream implements BitStream
         }
         if ( havePending )
         {
-            return false;                       // the final group is a dangling high surrogate
+            return fail();                       // the final group is a dangling high surrogate
         }
         value.value = new String( output, 0, outputIndex );
         return true;
@@ -454,16 +509,17 @@ public final class ReadStream implements BitStream
     @Override
     public boolean serializeIntRelative( int previous, IntRef current )
     {
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
+        assert previous >= 0;               // the domain: previous is caller state, never off the wire
+
         // the one-bit tier
         if ( reader.wouldReadPastEnd( 1 ) )
         {
-            return false;
+            return fail();
         }
         if ( reader.readBits( 1 ) != 0 )
         {
-            // reconstruct in the unsigned domain: wraps near the type maximum
-            current.value = previous + 1;
-            return true;
+            return acceptIntRelative( previous, (long) previous + 1, current );
         }
 
         // the bounded difference tiers
@@ -471,7 +527,7 @@ public final class ReadStream implements BitStream
         {
             if ( reader.wouldReadPastEnd( 1 ) )
             {
-                return false;
+                return fail();
             }
             if ( reader.readBits( 1 ) != 0 )
             {
@@ -480,30 +536,44 @@ public final class ReadStream implements BitStream
                 int bits = SerializeUtil.bitsRequired( tierMin, tierMax );
                 if ( reader.wouldReadPastEnd( bits ) )
                 {
-                    return false;
+                    return fail();
                 }
                 int unsignedValue = reader.readBits( bits );
                 if ( Integer.compareUnsigned( unsignedValue, tierMax - tierMin ) > 0 )
                 {
-                    return false;
+                    return fail();
                 }
-                // reconstruct in the unsigned domain: wraps near the type maximum
-                current.value = previous + ( unsignedValue + tierMin );
-                return true;
+                long difference = Integer.toUnsignedLong( unsignedValue ) + tierMin;
+                return acceptIntRelative( previous, previous + difference, current );
             }
         }
 
-        // the final tier transmits current, not the difference, and the reader
-        // must check the ordering the absolute form does not carry
+        // the final tier transmits current, not the difference. Its 32 raw bits
+        // are unsigned, so a value with the top bit set lies outside the domain
+        // and the reconstruction check below refuses it.
         if ( reader.wouldReadPastEnd( 32 ) )
         {
-            return false;
+            return fail();
         }
-        current.value = reader.readBits( 32 );
-        if ( current.value <= previous )
+        long absolute = Integer.toUnsignedLong( reader.readBits( 32 ) );
+        return acceptIntRelative( previous, absolute, current );
+    }
+
+    // STANDARD.md, "int_relative": every tier reconstructs current in a width
+    // that cannot wrap — a long here — and the read is refused unless the
+    // result lies in the domain, 0 to 2^31 - 1 inclusive, and is strictly
+    // greater than previous. The destination is written only on acceptance.
+    private boolean acceptIntRelative( int previous, long reconstructed, IntRef current )
+    {
+        if ( reconstructed < 0 || reconstructed > Integer.MAX_VALUE )
         {
-            return false;
+            return fail();
         }
+        if ( reconstructed <= previous )
+        {
+            return fail();
+        }
+        current.value = (int) reconstructed;
         return true;
     }
 
@@ -513,6 +583,7 @@ public final class ReadStream implements BitStream
     @Override
     public boolean serializeFixed( LongRef value, int integerBits, int fractionBits, long minUnits, long maxUnits )
     {
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
         assert integerBits >= 1;
         assert fractionBits >= 0;
         int width = integerBits + fractionBits;
@@ -537,7 +608,7 @@ public final class ReadStream implements BitStream
         {
             if ( reader.wouldReadPastEnd( bits ) )
             {
-                return false;
+                return fail();
             }
             offset = Integer.toUnsignedLong( reader.readBits( bits ) );
         }
@@ -547,12 +618,12 @@ public final class ReadStream implements BitStream
             // two stream-level 32-bit operations
             if ( reader.wouldReadPastEnd( 32 ) )
             {
-                return false;
+                return fail();
             }
             long lo = Integer.toUnsignedLong( reader.readBits( 32 ) );
             if ( reader.wouldReadPastEnd( bits - 32 ) )
             {
-                return false;
+                return fail();
             }
             long hi = Integer.toUnsignedLong( reader.readBits( bits - 32 ) );
             offset = ( hi << 32 ) | lo;
@@ -561,7 +632,7 @@ public final class ReadStream implements BitStream
         // reject raw values outside [rawMin,rawMax] smuggled into the bit headroom — reject, never clamp
         if ( Long.compareUnsigned( offset, rawRange ) > 0 )
         {
-            return false;
+            return fail();
         }
         value.value = rawMin + offset;
         return true;
@@ -570,6 +641,7 @@ public final class ReadStream implements BitStream
     @Override
     public boolean serializeFixed128( Ref<Int128Value> value, int integerBits, int fractionBits, long minUnits, long maxUnits )
     {
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
         assert integerBits >= 1;
         assert fractionBits >= 0;
         assert integerBits + fractionBits == 128;
@@ -597,34 +669,34 @@ public final class ReadStream implements BitStream
         long group3 = 0;
         if ( bits <= 32 )
         {
-            if ( reader.wouldReadPastEnd( bits ) ) return false;
+            if ( reader.wouldReadPastEnd( bits ) ) return fail();
             group0 = Integer.toUnsignedLong( reader.readBits( bits ) );
         }
         else if ( bits <= 64 )
         {
-            if ( reader.wouldReadPastEnd( 32 ) ) return false;
+            if ( reader.wouldReadPastEnd( 32 ) ) return fail();
             group0 = Integer.toUnsignedLong( reader.readBits( 32 ) );
-            if ( reader.wouldReadPastEnd( bits - 32 ) ) return false;
+            if ( reader.wouldReadPastEnd( bits - 32 ) ) return fail();
             group1 = Integer.toUnsignedLong( reader.readBits( bits - 32 ) );
         }
         else if ( bits <= 96 )
         {
-            if ( reader.wouldReadPastEnd( 32 ) ) return false;
+            if ( reader.wouldReadPastEnd( 32 ) ) return fail();
             group0 = Integer.toUnsignedLong( reader.readBits( 32 ) );
-            if ( reader.wouldReadPastEnd( 32 ) ) return false;
+            if ( reader.wouldReadPastEnd( 32 ) ) return fail();
             group1 = Integer.toUnsignedLong( reader.readBits( 32 ) );
-            if ( reader.wouldReadPastEnd( bits - 64 ) ) return false;
+            if ( reader.wouldReadPastEnd( bits - 64 ) ) return fail();
             group2 = Integer.toUnsignedLong( reader.readBits( bits - 64 ) );
         }
         else
         {
-            if ( reader.wouldReadPastEnd( 32 ) ) return false;
+            if ( reader.wouldReadPastEnd( 32 ) ) return fail();
             group0 = Integer.toUnsignedLong( reader.readBits( 32 ) );
-            if ( reader.wouldReadPastEnd( 32 ) ) return false;
+            if ( reader.wouldReadPastEnd( 32 ) ) return fail();
             group1 = Integer.toUnsignedLong( reader.readBits( 32 ) );
-            if ( reader.wouldReadPastEnd( 32 ) ) return false;
+            if ( reader.wouldReadPastEnd( 32 ) ) return fail();
             group2 = Integer.toUnsignedLong( reader.readBits( 32 ) );
-            if ( reader.wouldReadPastEnd( bits - 96 ) ) return false;
+            if ( reader.wouldReadPastEnd( bits - 96 ) ) return fail();
             group3 = Integer.toUnsignedLong( reader.readBits( bits - 96 ) );
         }
         UInt128Value offset = new UInt128Value( ( group3 << 32 ) | group2, ( group1 << 32 ) | group0 );
@@ -632,7 +704,7 @@ public final class ReadStream implements BitStream
         // reject raw values outside [rawMin,rawMax] smuggled into the bit headroom — reject, never clamp
         if ( offset.compareUnsigned( rawRange ) > 0 )
         {
-            return false;
+            return fail();
         }
         value.value = Int128Value.fromUnsigned( rawMin.add( offset ) );
         return true;

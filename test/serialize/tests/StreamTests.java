@@ -229,5 +229,105 @@ final class StreamTests
             check( reader.serializeBits( value, 1 ) );
             check( !reader.serializeAlign(), "doctored padding refused" );
         } );
+
+        test( "terminality: a refusal latches, and every later read fails and writes nothing", () -> {
+            // failure before any consumption
+            checkTerminal( "past the end at bit zero", failed( reader -> {
+                check( !reader.serializeBits( new IntRef(), 32 ), "32 bits from an empty stream refused" );
+            }, new byte[8], 0 ) );
+
+            // failure after partial consumption: four bits land, the rest does not
+            checkTerminal( "past the end mid-stream", failed( reader -> {
+                check( reader.serializeBits( new IntRef(), 4 ), "the first four bits land" );
+                check( !reader.serializeBits( new IntRef(), 32 ), "32 more from one byte refused" );
+            }, new byte[9], 1 ) );
+
+            // failure on range headroom: 255 smuggled into the eight bits of [0,200]
+            byte[] headroom = new byte[9];
+            headroom[0] = (byte) 0xFF;
+            checkTerminal( "an offset above the range", failed( reader -> {
+                check( !reader.serializeInt( new IntRef(), 0, 200 ), "255 over [0,200] refused" );
+            }, headroom, 1 ) );
+
+            // failure on alignment: a nonzero padding bit
+            byte[] alignment = new byte[16];
+            WriteStream aligning = new WriteStream( alignment, 8 );
+            check( aligning.serializeBits( new IntRef( 1 ), 1 ) );
+            check( aligning.serializeAlign() );
+            check( aligning.serializeBits( new IntRef( 0x55 ), 8 ) );
+            aligning.flush();
+            alignment[0] |= (byte) 0x80;
+            checkTerminal( "nonzero alignment padding", failed( reader -> {
+                check( reader.serializeBits( new IntRef(), 1 ), "the leading bit lands" );
+                check( !reader.serializeAlign(), "doctored padding refused" );
+            }, alignment, (int) aligning.getBytesProcessed() ) );
+
+            // failure on a malformed string: 0xFF appears nowhere in well-formed UTF-8
+            byte[] malformed = new byte[72];
+            WriteStream writing = new WriteStream( malformed, 64 );
+            check( writing.serializeInt( new IntRef( 3 ), 0, 255 ) );
+            check( writing.serializeBytes( GoldenWire.bytes( 0xFF, 0xFE, 0xFF ), 3 ) );
+            writing.flush();
+            checkTerminal( "a malformed string payload", failed( reader -> {
+                check( !reader.serializeString( new Ref<>( "" ), 256 ), "0xFF payload refused" );
+            }, malformed, (int) writing.getBytesProcessed() ) );
+
+            // failure on int_relative: the one-bit tier reconstructs past the domain
+            byte[] relative = new byte[9];
+            relative[0] = 0x01;
+            checkTerminal( "an int_relative read past the domain", failed( reader -> {
+                check( !reader.serializeIntRelative( Integer.MAX_VALUE, new IntRef() ), "past the domain refused" );
+            }, relative, 1 ) );
+        } );
+
+        test( "terminality: reset clears the latch", () -> {
+            byte[] buffer = new byte[9];
+            buffer[0] = 0x0F;
+            ReadStream reader = new ReadStream( buffer, 1 );
+            check( !reader.serializeBits( new IntRef(), 32 ), "32 bits from one byte refused" );
+            check( reader.isFailed(), "the latch is set" );
+
+            reader.reset( buffer, 1 );
+            check( !reader.isFailed(), "reset cleared the latch" );
+            IntRef value = new IntRef();
+            check( reader.serializeBits( value, 4 ), "the stream reads again" );
+            checkEqual( value.value, 0x0F, "the value after reset" );
+        } );
+    }
+
+    /** A value no read below decodes to, so a written destination is visible after a refusal. */
+    private static final int SENTINEL = 0x5E5E5E5E;
+
+    /** Runs a body that must fail its stream, and hands the failed stream back. */
+    private static ReadStream failed( java.util.function.Consumer<ReadStream> body, byte[] buffer, int bytes )
+    {
+        ReadStream reader = new ReadStream( buffer, bytes );
+        body.accept( reader );
+        return reader;
+    }
+
+    /**
+     * STANDARD.md, "Failure is terminal": a later read on a failed stream must
+     * fail, consume no bits and write no destination — including a zero-bit
+     * read, which consumes nothing and so cannot be caught by the past-end
+     * check alone.
+     */
+    private static void checkTerminal( String what, ReadStream reader )
+    {
+        check( reader.isFailed(), what + ": the latch is set" );
+        long consumed = reader.getBitsProcessed();
+
+        IntRef destination = new IntRef( SENTINEL );
+        check( !reader.serializeBits( destination, 1 ), what + ": a one-bit read fails" );
+        checkEqual( destination.value, SENTINEL, what + ": the one-bit read wrote nothing" );
+
+        check( !reader.serializeInt( destination, 7, 7 ), what + ": a zero-bit read fails" );
+        checkEqual( destination.value, SENTINEL, what + ": the zero-bit read wrote nothing" );
+
+        BoolRef flag = new BoolRef( true );
+        check( !reader.serializeBool( flag ), what + ": a bool read fails" );
+        check( flag.value, what + ": the bool read wrote nothing" );
+
+        checkEqual( reader.getBitsProcessed(), consumed, what + ": no bits were consumed after the failure" );
     }
 }

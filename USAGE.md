@@ -1,9 +1,11 @@
 # Using serialize.java
 
 Everything the library does, by example. The wire format itself is
-defined by the C++ reference's
-[STANDARD.md](https://github.com/mas-bandwidth/serialize/blob/main/STANDARD.md);
-this document teaches the Java surface that speaks it.
+defined by [STANDARD.md](STANDARD.md) — a verbatim vendored copy of the
+specification in
+[mas-bandwidth/serialize](https://github.com/mas-bandwidth/serialize),
+which CI checks for drift; this document teaches the Java surface that
+speaks it.
 
 ```java
 import serialize.*;
@@ -82,16 +84,33 @@ everything, because the wire is a trust boundary.
 
 On the read side, every failure — a truncated read, a value outside its
 range, nonzero alignment padding, a malformed string — returns `false`,
-and hostile bytes never throw. A failed read is terminal for the stream:
-nothing after the failing operation has a defined position. `reset(...)`
-points the stream at data again and clears all state.
+and hostile bytes never throw.
+
+**A failed read is terminal.** Nothing after the failing operation has a
+defined position, so `ReadStream` latches: the first refusal sets the
+failure flag, and every later read on that stream returns `false`
+without consuming a bit or writing a destination — a zero-bit read
+included. `isFailed()` reports the latch; `reset(...)` points the stream
+at data again and clears it, and nothing else does.
+
+**A refused read leaves its destination unwritten.** When a read of a
+scalar fails, the holder cell holds exactly what it held before the
+call, so a caller that trusts the cell over the return code cannot
+proceed on a value the stream never carried. Two limits: a read into a
+caller-owned buffer — `serializeBytes`, `serializeString`,
+`serializeWideString` — leaves that buffer's **contents unspecified**
+after a refusal, and a composite read may leave earlier members written,
+because it is a sequence of primitive reads and each one carries the
+rule alone.
 
 ```java
 byte[] data = new byte[16];                        // 1 byte of data + the 8-byte slack
 ReadStream r = new ReadStream( data, 1 );          // 8 bits of data
 r.serializeBits( v, 32 );                          // -> false: past the end
+r.serializeBits( v, 8 );                           // -> false: the stream has failed, v untouched
+r.isFailed();                                      // -> true
 
-r.reset( data, 1 );                                // point at data again, state cleared
+r.reset( data, 1 );                                // point at data again, the latch cleared
 r.serializeBits( v, 8 );                           // -> true
 
 // an offset smuggled into the bit headroom of a range is refused
@@ -118,7 +137,10 @@ asserts:
   refuse), never memory unsafety — the JVM's own bounds checks backstop
   the trusted path.
 
-The wire for conforming writes is byte identical in both modes.
+The wire for conforming writes is byte identical in both modes, and so
+is every refusal: the read side's obligations are checks, never asserts.
+`make test-release` runs the whole suite in the release shape to prove
+it.
 
 ## Raw bits
 
@@ -158,8 +180,10 @@ above `max - min` fails the read — reject, never clamp).
 computed in unsigned arithmetic so ranges wider than 2^63 are exact.
 `serializeInt128` extends it to 128 bits on the `Int128Value` pair,
 written in 32-bit groups least significant first; where the range fits
-64 bits the bytes are identical to `serializeInt64`. Its bounds must
-satisfy `min < max` strictly.
+64 bits the bytes are identical to `serializeInt64`. `min <= max` is the
+legal relation on every ranged width: a degenerate `min == max` costs
+zero bits at 128 bits exactly as it does at 32, with nothing on the
+wire, nothing consumed, and the value taken from `min`.
 
 ```java
 w.serializeInt64( new LongRef( -5000000000L ), -5000000000L, 5000000000L ); // 34 bits
@@ -310,11 +334,19 @@ interior NUL groups, and unpaired, misordered or dangling surrogates.
 ## The relative integer
 
 `serializeIntRelative(previous, ref)` prices strictly increasing
-unsigned 32-bit sequences — sequence numbers, ack chains.
-`current > previous` always, no wrapping. A difference of 1 costs a
-single bit; small differences ride payload tiers of 5/8/13/18/23 bits;
-past the ladder, six zero flags carry `current` itself as 32 raw bits,
-and the reader enforces the ordering on that absolute form too.
+sequences — sequence numbers, ack chains. **The domain is `0` to
+`2^31 - 1` inclusive**, and both `previous` and `current` lie in it.
+`current > previous` always, no wrapping: a caller with a wrapping
+counter unwraps it before serializing. A difference of 1 costs a single
+bit; small differences ride payload tiers of 5/8/13/18/23 bits; past the
+ladder, six zero flags carry `current` itself as 32 raw bits.
+
+The reader reconstructs `current` in a width that cannot wrap, in every
+tier, and refuses the read unless the result lies in the domain and
+strictly exceeds `previous` — the absolute tier's 32 raw bits are
+unsigned, so a value with the top bit set is outside the domain and is
+refused. A refused read is terminal and leaves the holder cell
+untouched.
 
 ```java
 w.serializeIntRelative( 100, new IntRef( 101 ) );  // 1 bit
@@ -323,8 +355,9 @@ w.serializeIntRelative( 100, new IntRef( 2100 ) ); // a mid-ladder tier
 r.serializeIntRelative( 100, seq );                // seq.value == 101
 ```
 
-`previous` is caller state, not wire: both sides already know it.
-Writing `current <= previous` is a contract violation, asserted under
+`previous` is caller state, not wire: both sides already know it, and it
+never arrives off the wire. Writing `current <= previous`, or a
+`previous` outside the domain, is a contract violation, asserted under
 `-ea`.
 
 ## Fixed point
@@ -404,12 +437,14 @@ of slack past the data.
 ## Wire compatibility
 
 The same values produce the same bytes in every family implementation.
-This is not aspiration but pinned fact: the test suite carries the
-family's golden vectors — including the golden wire message covering
-every operation class, byte for byte — plus the discriminating float
-vectors, the string and wide-string pins, every relative-integer tier,
-and the fixed point shapes at every group count, all minted from the
-canonical C++ reference's own output. If your message serializes with
+This is not aspiration but pinned fact: the test suite runs every vector
+in [`conformance/`](conformance) — the family's shared corpus, vendored
+from mas-bandwidth/serialize and checked for drift by CI — and carries
+the family's golden vectors: the golden wire message covering every
+operation class byte for byte, the discriminating float vectors, the
+string and wide-string pins, every relative-integer tier, and the fixed
+point shapes at every group count, all minted from the canonical C++
+reference's own output. If your message serializes with
 the same declarations on both ends, a stream written by any family
 implementation reads in any other.
 
