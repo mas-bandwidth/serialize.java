@@ -6,12 +6,14 @@ JAVAC    := $(JDK_HOME)/bin/javac
 JAVA     := $(JDK_HOME)/bin/java
 
 SRC       := $(wildcard src/serialize/*.java)
-TEST_SRC  := $(wildcard test/serialize/tests/*.java)
+TEST_SRC    := $(wildcard test/serialize/tests/*.java)
+INTEROP_SRC := $(wildcard interop/serialize/interop/*.java)
 
-CLASSES      := build/classes
-TEST_CLASSES := build/test-classes
+CLASSES         := build/classes
+TEST_CLASSES    := build/test-classes
+INTEROP_CLASSES := build/interop-classes
 
-.PHONY: all test test-release clean
+.PHONY: all test test-release conformance interop clean
 
 all: test test-release
 
@@ -36,6 +38,24 @@ test: $(TEST_CLASSES)/.stamp
 # as an accepted stream.
 test-release: $(TEST_CLASSES)/.stamp
 	$(JAVA) -da -cp $(CLASSES):$(TEST_CLASSES) serialize.tests.AllTests --release
+
+# the shared conformance corpus alone, so the interop job can hold this reader
+# and the pinned C++ reader to the same vendored files in one place. make test
+# runs it too, as one suite among many.
+conformance: $(TEST_CLASSES)/.stamp
+	$(JAVA) -ea -cp $(CLASSES):$(TEST_CLASSES) serialize.tests.ConformanceTests
+
+# the interop harness: compiled against the library classes only, like the tests.
+# One exchange with the C++ reference per invocation:
+#   make interop MODE=write FILE=/tmp/java.bin
+$(INTEROP_CLASSES)/.stamp: $(INTEROP_SRC) $(CLASSES)/.stamp
+	$(JAVAC) --release 17 -Xlint:all -Werror -cp $(CLASSES) -d $(INTEROP_CLASSES) $(INTEROP_SRC)
+	@touch $@
+
+# asserts on: the write-side contracts are asserts here as everywhere, and the
+# degenerate ranges the message carries must pass with them enabled
+interop: $(INTEROP_CLASSES)/.stamp
+	$(JAVA) -ea -cp $(CLASSES):$(INTEROP_CLASSES) serialize.interop.Interop $(MODE) $(FILE)
 
 clean:
 	rm -rf build
