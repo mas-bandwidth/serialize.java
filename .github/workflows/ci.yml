@@ -82,7 +82,9 @@ jobs:
   # what a commit's CI proves. Find the newest tag with:
   #   gh release list --repo mas-bandwidth/serialize --limit 1
   # Bump family-wide, deliberately, in its own commit per repo. SERIALIZE_TAG
-  # below is the ONE place this repository names a version of the reference.
+  # below is the ONE place this repository names a RELEASE of the reference; the
+  # corpus commit beside it names the vendoring and is a different pin for a
+  # different job, explained where it is declared.
   # (The spec-sync job above deliberately stays on upstream main: drift DETECTION
   # is that job's whole purpose.)
   interop:
@@ -90,6 +92,14 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SERIALIZE_TAG: v1.16.0
+      # TWO PINS, TWO JOBS FOR THEM. SERIALIZE_TAG above is the wire
+      # compatibility pin and is a released tag. SERIALIZE_CORPUS_COMMIT is the
+      # commit STANDARD.md and conformance/ in this repository are vendored
+      # from, and the reference conformance runner is built from it, because a
+      # runner older than the corpus cannot drive the operations the corpus
+      # carries. The spec-sync job proves this repository's vendored copies
+      # match upstream main, so this commit is upstream main at the vendoring.
+      SERIALIZE_CORPUS_COMMIT: 7e0515e952f3373d001ec1899adf9dffb823e1c5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -100,15 +110,20 @@ jobs:
       - name: Check out the C++ reference at the pinned release
         run: git clone --quiet --depth 1 --branch "$SERIALIZE_TAG" https://github.com/mas-bandwidth/serialize.git /tmp/cpp-serialize
 
+      - name: Check out the C++ reference at the corpus commit
+        run: |
+          git clone --quiet https://github.com/mas-bandwidth/serialize.git /tmp/cpp-serialize-corpus
+          git -C /tmp/cpp-serialize-corpus checkout --quiet "$SERIALIZE_CORPUS_COMMIT"
+
       # Asserts stay ON (no -DNDEBUG): they are the C++ half of "API misuse
       # panics", and the degenerate ranges the message carries must pass with the
       # library's own checks enabled rather than around them. No -ffp-contract=off
       # either: the compressed float arithmetic is pinned in the library's source,
       # and building with default flags proves that rather than masking it.
-      - name: Build the C++ halves against the pinned library
+      - name: Build the C++ halves
         run: |
           c++ -O2 -std=c++17 -Wall -I /tmp/cpp-serialize -o /tmp/cpp_interop interop/interop.cpp
-          c++ -O2 -std=c++17 -Wall -I /tmp/cpp-serialize -o /tmp/cpp_conformance /tmp/cpp-serialize/conformance.cpp
+          c++ -O2 -std=c++17 -Wall -I /tmp/cpp-serialize-corpus -o /tmp/cpp_conformance /tmp/cpp-serialize-corpus/conformance.cpp
 
       - name: Both halves write byte identical wire data
         run: |

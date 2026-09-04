@@ -17,7 +17,7 @@ specification in
 [mas-bandwidth/serialize](https://github.com/mas-bandwidth/serialize),
 which CI checks for drift — is the authority on every byte.
 
-Version 1.1.1 (`SerializeUtil.VERSION`).
+Version 1.1.2 (`SerializeUtil.VERSION`).
 
 ## Getting it
 
@@ -26,7 +26,7 @@ package is not yet published: there is no artifact on Maven Central under any
 coordinate, and there is no Maven or Gradle build here to produce one.
 Publishing it is a separate round.
 
-Fifteen files under `src/serialize/`, zero dependencies, Java 17 language
+Sixteen files under `src/serialize/`, zero dependencies, Java 17 language
 level. Take it either way:
 
 **Copy the package in** — drop `src/serialize/` into your own source tree and
@@ -85,6 +85,9 @@ primitive-specialized holder cells (`IntRef`, `LongRef`, `BoolRef`,
   pairs of long halves, mirroring the family's emulated pair types.
 - **Utilities**: `SerializeUtil` — `bitsRequired` / `64` / `128`, zig-zag
   conversion, the compressed-float step count.
+- **Composition**: `serializeObject`, which runs a nested `Serializer`
+  inline and contributes no bytes of its own — no framing, no length
+  prefix, no alignment inserted around it.
 - **The bitpacker underneath**: `BitWriter` and `BitReader`, the family
   wire in branchless 64-bit window loads. Every stream and both
   bitpackers expose `reset(...)` for allocation-free reuse.
@@ -146,11 +149,19 @@ gates.
 
 The suite runs every vector in [`conformance/`](conformance), the
 family's shared corpus, vendored from mas-bandwidth/serialize and
-checked for drift by CI: an accepted vector must decode to the stated
-value and consume the stated bits, a refused vector must be refused, and
-nothing regenerates its own expectations. It also pins the family's
-golden vectors byte for byte — the golden wire message covering every
-operation class, the discriminating compressed-float vectors (bit
+checked for drift by CI. The directory is discovered at run time rather
+than named in the source, and a vector whose operation the runner cannot
+drive fails rather than being skipped. An accepted vector must decode to
+the stated value and consume the stated bits; a vector marked
+`writer = canonical` is re-emitted through the write stream and compared
+byte for byte, flush included; a vector carrying `measure_at_least` is
+held to that floor on the measure stream. A refused vector must be
+refused, must leave the caller's scalar destination unwritten, and must
+leave the stream terminal, which is checked by behavior: every later step
+refuses too, and a further read fails, consumes no bits and writes
+nothing. Nothing regenerates its own expectations. The suite also pins
+the family's golden vectors byte for byte — the golden wire message
+covering every operation class, the discriminating compressed-float vectors (bit
 patterns, not tolerances), the string and wide-string pins, every
 relative-integer tier, and the fixed point shapes at every group count —
 plus a sabotage sweep proving every consumed bit of the golden stream is

@@ -293,6 +293,59 @@ final class StreamTests
             check( reader.serializeBits( value, 4 ), "the stream reads again" );
             checkEqual( value.value, 0x0F, "the value after reset" );
         } );
+
+        // STANDARD.md bounds a bits field by value < 2^bits at every width in
+        // [1,64]. The write path narrows a 64-bit value to a 32-bit group at
+        // widths of 32 or fewer, so the bound must be checked on the caller's
+        // value FIRST: a check after the narrowing is handed a value the
+        // narrowing already made legal, and 2^32 + 5 arrives as 5, which fits
+        // four bits. Every writing stream carries the same check.
+        // The contract is an assert, so it exists only in the checked shape.
+        if ( assertionsEnabled() )
+        {
+            test( "write contract: a bits64 value is bounded at the caller's width, before it narrows", () -> {
+                WriteStream writer = new WriteStream( new byte[16], 16 );
+                check( fires( () -> writer.serializeBits64( new LongRef( ( 1L << 32 ) + 5 ), 4 ) ),
+                       "the write stream must reject a value that does not fit four bits" );
+
+                MeasureStream measure = new MeasureStream();
+                check( fires( () -> measure.serializeBits64( new LongRef( ( 1L << 32 ) + 5 ), 4 ) ),
+                       "the measure stream must reject a value that does not fit four bits" );
+
+                // the negative control: the value one step inside the bound, which
+                // must not fire on either stream
+                WriteStream inside = new WriteStream( new byte[16], 16 );
+                check( !fires( () -> inside.serializeBits64( new LongRef( 5 ), 4 ) ),
+                       "a value that fits four bits must pass" );
+                check( !fires( () -> new MeasureStream().serializeBits64( new LongRef( 5 ), 4 ) ),
+                       "a value that fits four bits must pass the measure" );
+
+                // and the widest field, where every 64-bit value fits
+                check( !fires( () -> new MeasureStream().serializeBits64( new LongRef( -1L ), 64 ) ),
+                       "every value fits 64 bits" );
+            } );
+        }
+    }
+
+    private static boolean assertionsEnabled()
+    {
+        boolean enabled = false;
+        assert enabled = true;
+        return enabled;
+    }
+
+    /** Did the body's debug contract fire? */
+    private static boolean fires( Runnable body )
+    {
+        try
+        {
+            body.run();
+            return false;
+        }
+        catch ( AssertionError error )
+        {
+            return true;
+        }
     }
 
     /** A value no read below decodes to, so a written destination is visible after a refusal. */
