@@ -711,6 +711,13 @@ public final class ReadStream implements BitStream
     }
 
     @Override
+    public boolean serializeObject( Serializer object )
+    {
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
+        return object.serialize( this );
+    }
+
+    @Override
     public int getAlignBits()
     {
         return reader.getAlignBits();

@@ -395,6 +395,41 @@ the wire: for the same bounds, signed and unsigned storage produce
 identical bytes. Reads refuse raw values smuggled into the bit headroom;
 an invalid declaration is caller misuse, asserted under `-ea`.
 
+## Nesting: composition, not an encoding
+
+`serializeObject(serializer)` runs a nested object's own serialize
+function inline. It contributes **no bytes of its own** — no framing, no
+length prefix and no alignment is inserted around it — so the nested
+operations land at exactly the position the call sits at, and nesting a
+run of fields changes nothing about the bytes.
+
+`Serializer` is a one-method interface, so a message type implements it
+directly and a small nested field can be a lambda:
+
+```java
+final class Transform implements Serializer
+{
+    final FloatRef x = new FloatRef();
+    final FloatRef y = new FloatRef();
+
+    @Override public boolean serialize( BitStream stream )
+    {
+        return stream.serializeFloat( x ) && stream.serializeFloat( y );
+    }
+}
+
+// the same three fields, nested and flat, produce the same bytes
+stream.serializeInt( health, 0, 100 ) &&
+stream.serializeObject( transform );
+
+stream.serializeInt( health, 0, 100 ) &&
+stream.serializeFloat( transform.x ) && stream.serializeFloat( transform.y );
+```
+
+A refusal inside the nesting propagates out of it, and a read stream
+consults its failure state first, so a nested object on a stream that has
+already failed refuses without invoking the object at all.
+
 ## Measuring
 
 `MeasureStream` prices a message without a buffer. For everything except

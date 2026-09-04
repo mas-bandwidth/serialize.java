@@ -46,10 +46,15 @@ public final class MeasureStream implements BitStream
         return true;
     }
 
-    private static boolean checkBits64( int bits )
+    // the same width bound the write stream carries, on the caller's 64-bit
+    // value: a measure runs the writer's contracts so a non-conforming call is
+    // diagnosed on every writing stream. SerializeUtil.valueFitsInBits is the
+    // one place the rule lives.
+    private static boolean checkBits64( long value, int bits )
     {
         assert bits > 0;
         assert bits <= 64;
+        assert SerializeUtil.valueFitsInBits( value, bits );
         return true;
     }
 
@@ -80,7 +85,7 @@ public final class MeasureStream implements BitStream
     @Override
     public boolean serializeBits64( LongRef value, int bits )
     {
-        assert checkBits64( bits );
+        assert checkBits64( value.value, bits );
         bitsWritten += bits;
         return true;
     }
@@ -277,6 +282,12 @@ public final class MeasureStream implements BitStream
 
         bitsWritten += SerializeUtil.bitsRequired64( minUnits, maxUnits ) + fractionBits;
         return true;
+    }
+
+    @Override
+    public boolean serializeObject( Serializer object )
+    {
+        return object.serialize( this );
     }
 
     /** Always the worst case of 7: the measure does not know the final bit position. */

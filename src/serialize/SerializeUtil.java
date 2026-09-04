@@ -11,7 +11,26 @@ public final class SerializeUtil
     private SerializeUtil() {}
 
     /** The library version, matching the release tag. */
-    public static final String VERSION = "1.1.1";
+    public static final String VERSION = "1.1.2";
+
+    /**
+     * Does a value fit in a field of this width? STANDARD.md bounds a
+     * {@code bits} field by {@code value < 2^bits} at every width in [1,64],
+     * not only at 32 or fewer.
+     *
+     * This is the write side bound for {@code serializeBits64}, and it runs on
+     * the caller's 64-bit value before any narrowing to a 32-bit group. A
+     * check placed after the narrowing is handed a value the narrowing already
+     * made legal: 2^32 + 5 arrives as 5, which fits four bits.
+     *
+     * @param value the caller's value, read as unsigned.
+     * @param bits the field width, in [1,64].
+     * @return true if the value fits in that many bits.
+     */
+    public static boolean valueFitsInBits( long value, int bits )
+    {
+        return bits >= 64 || Long.compareUnsigned( value, ( 1L << bits ) - 1 ) <= 0;
+    }
 
     /**
      * The number of bits required to serialize an integer in [min,max].

@@ -51,10 +51,16 @@ public final class WriteStream implements BitStream
         return true;
     }
 
-    private static boolean checkBits64( int bits )
+    // the width bound runs on the caller's 64-bit value, before the narrowing
+    // to a 32-bit group in serializeBits64: a check placed after the narrowing
+    // is handed a value the narrowing already made legal.
+    // SerializeUtil.valueFitsInBits is the one place the rule lives, shared
+    // with MeasureStream.
+    private static boolean checkBits64( long value, int bits )
     {
         assert bits > 0;
         assert bits <= 64;
+        assert SerializeUtil.valueFitsInBits( value, bits );
         return true;
     }
 
@@ -85,7 +91,7 @@ public final class WriteStream implements BitStream
     @Override
     public boolean serializeBits64( LongRef value, int bits )
     {
-        assert checkBits64( bits );
+        assert checkBits64( value.value, bits );
         if ( bits <= 32 )
         {
             writer.writeBits( (int) value.value, bits );
@@ -442,6 +448,12 @@ public final class WriteStream implements BitStream
 
         writeGroups128( offset, bits );
         return true;
+    }
+
+    @Override
+    public boolean serializeObject( Serializer object )
+    {
+        return object.serialize( this );
     }
 
     @Override

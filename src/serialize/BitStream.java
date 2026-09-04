@@ -105,6 +105,16 @@ public interface BitStream
      */
     boolean serializeFixed128( Ref<Int128Value> value, int integerBits, int fractionBits, long minUnits, long maxUnits );
 
+    /**
+     * Runs a nested object's own serialize function inline. It contributes no
+     * bytes of its own: no framing, no length prefix and no alignment is
+     * inserted around it, so the nested object's operations appear at exactly
+     * this position in the stream. A refusal inside the nesting propagates out
+     * of it, and a read stream consults its failure state first, so a nested
+     * object on a failed stream refuses without invoking the object.
+     */
+    boolean serializeObject( Serializer object );
+
     /** The number of pad bits an align would cost right now. Always 7 on a measure stream. */
     int getAlignBits();
 
