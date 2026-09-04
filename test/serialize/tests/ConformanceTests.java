@@ -791,6 +791,26 @@ public final class ConformanceTests
                     check( words.length == 1, "malformed step: " + text );
                     step.kind = Kind.FLOAT;
                     return step;
+                case "double":
+                    check( words.length == 1, "malformed step: " + text );
+                    step.kind = Kind.DOUBLE;
+                    return step;
+                case "uint128":
+                    check( words.length == 1, "malformed step: " + text );
+                    step.kind = Kind.UINT128;
+                    return step;
+                case "int_relative":
+                    check( words.length == 2, "malformed step: " + text );
+                    step.kind = Kind.INT_RELATIVE;
+                    step.previous = parseNumber( words[1] ).intValue();
+                    return step;
+                case "compressed_float":
+                    check( words.length == 4, "malformed step: " + text );
+                    step.kind = Kind.COMPRESSED_FLOAT;
+                    step.floatMin = (float) Double.parseDouble( words[1] );
+                    step.floatMax = (float) Double.parseDouble( words[2] );
+                    step.resolution = (float) Double.parseDouble( words[3] );
+                    return step;
                 case "object":
                     check( words.length == 2, "malformed step: " + text );
                     step.kind = Kind.OBJECT;
@@ -812,8 +832,11 @@ public final class ConformanceTests
                     step.width = parseNumber( words[1] ).intValue();
                     return step;
                 case "int":
+                case "int64":
+                case "int128":
                     check( words.length == 3, "malformed step: " + text );
-                    step.kind = Kind.INT;
+                    step.kind = words[0].equals( "int" ) ? Kind.INT
+                              : words[0].equals( "int64" ) ? Kind.INT64 : Kind.INT128;
                     step.min = parseNumber( words[1] );
                     step.max = parseNumber( words[2] );
                     return step;
