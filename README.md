@@ -17,7 +17,7 @@ specification in
 [mas-bandwidth/serialize](https://github.com/mas-bandwidth/serialize),
 which CI checks for drift — is the authority on every byte.
 
-Version 1.1.0 (`SerializeUtil.VERSION`).
+Version 1.1.1 (`SerializeUtil.VERSION`).
 
 ## The surface
 
@@ -128,6 +128,17 @@ relative-integer tier, and the fixed point shapes at every group count —
 plus a sabotage sweep proving every consumed bit of the golden stream is
 load bearing, refusal and terminality proofs for hostile input, and the
 measure bound.
+
+[`interop/`](interop) takes it further: the CI `interop` job builds the
+C++ reference at a pinned release and runs it head to head with this
+port. Both halves write the same boundary message — every operation the
+standard defines, at its boundary values — and the files must be byte
+identical; each then decodes the other's bytes and re-encodes them
+exactly; both must refuse every truncation of the other's stream; and
+both run the corpus. The release candidate in this repository exchanges
+bytes with the reference on every push, so wire compatibility is
+measured rather than asserted. `make interop MODE=write FILE=out.bin`
+runs one exchange by hand.
 
 Benchmarking for the serialize family lives in [mas-bandwidth/schema](https://github.com/mas-bandwidth/schema)'s data-driven bench, which measures the generated codecs across every language on one corpus.
 

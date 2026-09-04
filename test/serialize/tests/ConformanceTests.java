@@ -38,7 +38,7 @@ import static serialize.tests.Harness.test;
  * below fails the suite rather than being skipped: a vector that does not
  * run is a vector that proves nothing.
  */
-final class ConformanceTests
+public final class ConformanceTests
 {
     private ConformanceTests() {}
 
@@ -52,6 +52,17 @@ final class ConformanceTests
     private static final BigInteger MASK_64 = BigInteger.ONE.shiftLeft( 64 ).subtract( BigInteger.ONE );
 
     private static final BigInteger MASK_128 = BigInteger.ONE.shiftLeft( 128 ).subtract( BigInteger.ONE );
+
+    /**
+     * Runs this suite on its own ({@code java serialize.tests.ConformanceTests}), so
+     * the interop job can hold this reader and the pinned C++ reader to the same
+     * corpus in one place. AllTests calls {@link #run} directly.
+     */
+    public static void main( String[] args )
+    {
+        run();
+        System.exit( Harness.finish() );
+    }
 
     static void run()
     {

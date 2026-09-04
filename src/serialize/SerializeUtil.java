@@ -11,7 +11,7 @@ public final class SerializeUtil
     private SerializeUtil() {}
 
     /** The library version, matching the release tag. */
-    public static final String VERSION = "1.1.0";
+    public static final String VERSION = "1.1.1";
 
     /**
      * The number of bits required to serialize an integer in [min,max].
