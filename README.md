@@ -1,5 +1,7 @@
 # serialize.java
 
+![serialize.java logo with a packed row of colored blocks](images/serialize.png)
+
 A bitpacking serialization library for **Java**. Part of the serialize
 family, wire compatible with the
 [C++](https://github.com/mas-bandwidth/serialize),
@@ -18,6 +20,8 @@ specification in
 which CI checks for drift — is the authority on every byte.
 
 Version 1.1.2 (`SerializeUtil.VERSION`).
+
+If this library helps you, **[please support it](https://www.patreon.com/MasBandwidth/membership)**
 
 ## Getting it
 
