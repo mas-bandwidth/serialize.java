@@ -8,7 +8,8 @@ import java.util.Arrays;
  *
  * Effectively branchless: each read loads a 64-bit little-endian window from
  * the current byte position and shifts by the bit remainder. There is no
- * scratch state and no refill branch.
+ * refill branch; the only scratch state is the sixteen-byte tail a tight
+ * buffer is read through.
  *
  * Any buffer size is supported. For the fastest reads, keep at least 8 bytes
  * of slack in the array past the data — for example, read packets into a
