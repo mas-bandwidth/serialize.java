@@ -31,9 +31,8 @@ public final class ReadStream implements BitStream
     private boolean failed;
 
     /**
-     * @param buffer the buffer to read from. The array must extend at least
-     *        8 bytes past {@code bytes}: the bit reader loads 64-bit windows
-     *        at byte granularity. See {@link BitReader}.
+     * @param buffer the buffer to read from. Any array size works; at least
+     *        8 bytes of slack past {@code bytes} is fastest. See {@link BitReader}.
      * @param bytes the number of bytes of packet data to read.
      */
     public ReadStream( byte[] buffer, int bytes )
@@ -44,8 +43,8 @@ public final class ReadStream implements BitStream
     /**
      * Rewinds the stream over the given buffer, the allocation-free reuse
      * surface: same contract as the constructor.
-     * @param buffer the buffer to read from. The array must extend at least
-     *        8 bytes past {@code bytes} — see {@link BitReader}.
+     * @param buffer the buffer to read from. Any array size works; at least
+     *        8 bytes of slack past {@code bytes} is fastest. See {@link BitReader}.
      * @param bytes the number of bytes of packet data to read.
      */
     public void reset( byte[] buffer, int bytes )
