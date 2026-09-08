@@ -45,6 +45,63 @@ final class StreamTests
             check( !reader.serializeBits( value, 8 ), "9th bit refused" );
         } );
 
+        // The common shape: getBytesProcessed() bytes are copied out of the
+        // write buffer into a packet-sized array and read back from that, with
+        // no slack past the data. Every window load near the end of such a
+        // buffer would run past the array; the reader takes them from its
+        // zero-padded tail window instead. Hostile bytes never throw, and
+        // neither may a correct packet in a tight array.
+        test( "tight buffer: a one-byte packet with no slack reads its eight bits", () -> {
+            byte[] packet = { (byte) 0xA5 };
+            ReadStream reader = new ReadStream( packet, packet.length );
+            IntRef value = new IntRef();
+            check( reader.serializeBits( value, 8 ) );
+            checkEqual( value.value, 0xA5, "the byte" );
+            check( !reader.serializeBits( value, 1 ), "9th bit refused" );
+        } );
+
+        test( "tight buffer: an exactly-sized packet reads to its last bit", () -> {
+            byte[] buffer = new byte[24];
+            WriteStream writer = new WriteStream( buffer, 16 );
+            check( writer.serializeBits( new IntRef( 5 ), 3 ) );
+            check( writer.serializeBits( new IntRef( 0xDEADBEEF ), 32 ) );
+            check( writer.serializeBits( new IntRef( 0x1ABCD ), 17 ) );
+            check( writer.serializeBits( new IntRef( 0xCAFEF00D ), 32 ) );
+            check( writer.serializeBits( new IntRef( 0xB ), 4 ) );
+            checkEqual( writer.getBitsProcessed(), 88, "the fields fill eleven bytes exactly" );
+            writer.flush();
+
+            // the packet, with nothing past it: the last field lands on the last bit
+            byte[] packet = new byte[(int) writer.getBytesProcessed()];
+            System.arraycopy( buffer, 0, packet, 0, packet.length );
+            ReadStream reader = new ReadStream( packet, packet.length );
+            IntRef value = new IntRef();
+            check( reader.serializeBits( value, 3 ) );
+            checkEqual( value.value, 5, "3 bits" );
+            check( reader.serializeBits( value, 32 ) );
+            checkEqual( value.value, 0xDEADBEEF, "32 bits" );
+            check( reader.serializeBits( value, 17 ) );
+            checkEqual( value.value, 0x1ABCD, "17 bits" );
+            check( reader.serializeBits( value, 32 ) );
+            checkEqual( value.value, 0xCAFEF00D, "32 bits, a window starting inside the last eight bytes" );
+            check( reader.serializeBits( value, 4 ) );
+            checkEqual( value.value, 0xB, "4 bits, a window starting on the last byte" );
+            checkEqual( reader.getBitsProcessed(), 88, "every bit was read" );
+            check( !reader.serializeBits( value, 1 ), "the bit past the end refused" );
+
+            // and the band between: some slack, but less than a window of it
+            byte[] partial = new byte[packet.length + 3];
+            System.arraycopy( packet, 0, partial, 0, packet.length );
+            reader.reset( partial, packet.length );
+            check( reader.serializeBits( value, 3 ) );
+            check( reader.serializeBits( value, 32 ) );
+            check( reader.serializeBits( value, 17 ) );
+            check( reader.serializeBits( value, 32 ) );
+            checkEqual( value.value, 0xCAFEF00D, "32 bits with three bytes of slack" );
+            check( reader.serializeBits( value, 4 ) );
+            checkEqual( value.value, 0xB, "the last field with three bytes of slack" );
+        } );
+
         test( "serializeBits64: low 32-bit group first, then the remainder", () -> {
             byte[] buffer = new byte[24];
             WriteStream writer = new WriteStream( buffer, 16 );
