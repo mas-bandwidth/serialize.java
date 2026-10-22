@@ -232,7 +232,11 @@ public final class WriteStream implements BitStream
     @Override
     public boolean serializeFloat( FloatRef value )
     {
-        writer.writeBits( Float.floatToRawIntBits( value.value ), 32 );
+        int bits = Float.floatToRawIntBits( value.value );
+        // STANDARD.md, "Finite values only": writing NaN or an infinity is the
+        // caller's contract violation, asserted like an out of range int
+        assert SerializeUtil.floatBitsAreFinite( bits );
+        writer.writeBits( bits, 32 );
         return true;
     }
 
@@ -240,6 +244,7 @@ public final class WriteStream implements BitStream
     public boolean serializeDouble( DoubleRef value )
     {
         long bits = Double.doubleToRawLongBits( value.value );
+        assert SerializeUtil.doubleBitsAreFinite( bits );
         writer.writeBits( (int) bits, 32 );
         writer.writeBits( (int) ( bits >>> 32 ), 32 );
         return true;
@@ -251,6 +256,13 @@ public final class WriteStream implements BitStream
         long maxIntegerValue = SerializeUtil.compressedFloatMaxIntegerValue( min, max, resolution );
         int bits = SerializeUtil.bitsRequired( 0, (int) maxIntegerValue );
         float delta = max - min;
+        // the declaration's top must decode finite (STANDARD.md, "compressed_float"):
+        // [3 * 2^103, FLT_MAX] passes every check on delta and still rounds its
+        // top to +inf, so a writer handed max would emit a code every reader
+        // refuses. Asserted on the write path only: a reader with such a
+        // declaration refuses the non-finite decode at runtime instead
+        assert SerializeUtil.floatBitsAreFinite( Float.floatToRawIntBits(
+            SerializeUtil.compressedFloatReadValue( (int) maxIntegerValue, maxIntegerValue, delta, min ) ) );
         int code = SerializeUtil.compressedFloatWriteCode( value.value, min, delta, maxIntegerValue );
         writer.writeBits( code, bits );
         return true;
@@ -295,26 +307,6 @@ public final class WriteStream implements BitStream
         writeInt( length, 0, bufferSize - 1 );
         serializeAlign();
         writer.writeBytes( utf8, length );
-        return true;
-    }
-
-    @Override
-    public boolean serializeWideString( Ref<String> value, int bufferSize )
-    {
-        String string = value.value;
-        assert string != null;
-        // the writer's contract, debug only: no unpaired surrogates, no interior NUL
-        assert SerializeUtil.isValidUtf16( string );
-        assert SerializeUtil.hasNoInteriorNul( string );
-        // Java strings are UTF-16 code units natively, which is exactly what the
-        // wire carries: one 32-bit group per code unit, surrogate pairs as-is
-        int length = string.length();
-        assert length < bufferSize;
-        writeInt( length, 0, bufferSize - 1 );
-        for ( int i = 0; i < length; i++ )
-        {
-            writer.writeBits( string.charAt( i ), 32 );
-        }
         return true;
     }
 
@@ -454,6 +446,13 @@ public final class WriteStream implements BitStream
     public boolean serializeObject( Serializer object )
     {
         return object.serialize( this );
+    }
+
+    /** Emits nothing: the object ends at the bit index after its last field, and flush zero fills the final byte. */
+    @Override
+    public boolean serializeEnd()
+    {
+        return true;
     }
 
     @Override

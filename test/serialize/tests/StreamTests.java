@@ -386,23 +386,12 @@ final class StreamTests
 
     private static boolean assertionsEnabled()
     {
-        boolean enabled = false;
-        assert enabled = true;
-        return enabled;
+        return Harness.assertionsEnabled();
     }
 
-    /** Did the body's debug contract fire? */
     private static boolean fires( Runnable body )
     {
-        try
-        {
-            body.run();
-            return false;
-        }
-        catch ( AssertionError error )
-        {
-            return true;
-        }
+        return Harness.fires( body );
     }
 
     /** A value no read below decodes to, so a written destination is visible after a refusal. */

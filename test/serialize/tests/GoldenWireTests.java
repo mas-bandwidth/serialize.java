@@ -7,8 +7,8 @@ import static serialize.tests.Harness.checkEqual;
 import static serialize.tests.Harness.test;
 
 /**
- * The golden battery's spine: byte-exact write, exact decode, the trailing
- * bits and past-end doctrines, and the full sabotage sweep.
+ * The golden battery's spine: byte-exact write, exact decode, the end and
+ * past-end doctrines, and the full sabotage sweep.
  */
 final class GoldenWireTests
 {
@@ -18,14 +18,15 @@ final class GoldenWireTests
     {
         final byte[] golden = GoldenWire.GOLDEN_WIRE_BYTES;
         final long goldenBits = GoldenWire.GOLDEN_BITS;
+        final long goldenReadBits = GoldenWire.GOLDEN_READ_BITS;
 
         test( "golden wire, write side: the golden values produce exactly the golden bytes", () -> {
             byte[] buffer = new byte[256];
             WriteStream writer = new WriteStream( buffer, 256 );
             check( GoldenWire.serialize( writer, GoldenWire.goldenData() ) );
             writer.flush();
-            checkEqual( writer.getBytesProcessed(), golden.length, "112 bytes" );
-            checkEqual( writer.getBitsProcessed(), goldenBits, "891 consumed bits" );
+            checkEqual( writer.getBytesProcessed(), golden.length, "106 bytes" );
+            checkEqual( writer.getBitsProcessed(), goldenBits, "843 bits: the end writes nothing" );
             Harness.checkBytesEqual( buffer, golden, golden.length, "golden bytes" );
         } );
 
@@ -35,11 +36,11 @@ final class GoldenWireTests
             ReadStream reader = new ReadStream( buffer, golden.length );
             GoldenWire.Data data = new GoldenWire.Data();
             check( GoldenWire.serialize( reader, data ) );
-            checkEqual( reader.getBitsProcessed(), goldenBits, "891 consumed bits" );
+            checkEqual( reader.getBitsProcessed(), goldenReadBits, "848 bits: the end consumes the padding" );
             check( GoldenWire.matchesGolden( data ), "every field decodes exactly, compressed float included" );
         } );
 
-        test( "trailing bits: the writer zeroes them and the reader is indifferent, small stream", () -> {
+        test( "trailing bits: the writer zeroes them, a field read never looks, the end refuses them", () -> {
             byte[] buffer = new byte[64];
             java.util.Arrays.fill( buffer, (byte) 0xFF );       // the zeros must come from the writer
 
@@ -63,9 +64,12 @@ final class GoldenWireTests
             IntRef tail = new IntRef();
             check( reader.serializeBits( tail, 3 ) );
             checkEqual( tail.value, 5, "tail unchanged" );
+            // the end is what examines them
+            check( !reader.serializeEnd(), "the end refuses set padding" );
+            check( reader.getRefusal() == Refusal.NONZERO_PADDING, "as nonzero_padding" );
         } );
 
-        test( "trailing bits: a doctored golden stream decodes identically", () -> {
+        test( "end: a doctored golden stream is refused at its end, padding and trailing byte alike", () -> {
             int bitsInFinalByte = (int) ( goldenBits % 8 );
             check( bitsInFinalByte != 0, "golden ends unaligned, so this test can discriminate" );
             int trailingMask = ( 0xFF << bitsInFinalByte ) & 0xFF;
@@ -83,9 +87,17 @@ final class GoldenWireTests
 
             ReadStream doctoredReader = new ReadStream( doctoredBuffer, golden.length );
             GoldenWire.Data doctoredData = new GoldenWire.Data();
-            check( GoldenWire.serialize( doctoredReader, doctoredData ), "readers must not reject" );
-            check( GoldenWire.matchesGolden( doctoredData ), "and must decode identically" );
-            checkEqual( doctoredReader.getBitsProcessed(), cleanReader.getBitsProcessed(), "same bits consumed" );
+            check( !GoldenWire.serialize( doctoredReader, doctoredData ), "the end refuses set padding" );
+            check( doctoredReader.getRefusal() == Refusal.NONZERO_PADDING, "as nonzero_padding" );
+            check( GoldenWire.matchesGolden( doctoredData ), "every field before the end decoded the golden values" );
+
+            // the clean stream with one more byte, even a zero one: trailing data
+            byte[] longerBuffer = new byte[256];
+            System.arraycopy( golden, 0, longerBuffer, 0, golden.length );
+            ReadStream longerReader = new ReadStream( longerBuffer, golden.length + 1 );
+            check( !GoldenWire.serialize( longerReader, new GoldenWire.Data() ), "the end refuses a byte more" );
+            check( longerReader.getRefusal() == Refusal.TRAILING_DATA, "as trailing_data" );
+            checkEqual( cleanReader.getBitsProcessed(), goldenReadBits, "the clean stream ends exactly" );
         } );
 
         test( "past-end poison: bytes past the stream end are never interpreted, accept path", () -> {
@@ -129,10 +141,11 @@ final class GoldenWireTests
             check( partialStateMatches( cleanData, poisonData ), "with identical partial state" );
         } );
 
-        test( "sabotage sweep: every consumed bit is load bearing, every trailing bit is not, nothing throws", () -> {
-            // 891 consumed bits: flipping any single one must make the decode refuse
-            // or produce different values. 5 trailing bits: flipping any must change
-            // nothing. Hostile data never throws anywhere in the 896 doctored streams.
+        test( "sabotage sweep: every bit is load bearing, the padding included, nothing throws", () -> {
+            // 843 bits of fields: flipping any single one must make the decode
+            // refuse or produce different values. 5 bits of padding: flipping any
+            // must be refused by the end as nonzero_padding. Hostile data never
+            // throws anywhere in the 848 doctored streams.
             for ( int bit = 0; bit < golden.length * 8; bit++ )
             {
                 byte[] doctoredBuffer = new byte[256];
@@ -150,8 +163,8 @@ final class GoldenWireTests
                 }
                 else
                 {
-                    check( matches && reader.getBitsProcessed() == goldenBits,
-                           "trailing bit " + bit + " flipped: the doctored stream was not accepted identically" );
+                    check( !ok && reader.getRefusal() == Refusal.NONZERO_PADDING,
+                           "padding bit " + bit + " flipped: the end did not refuse it as nonzero_padding" );
                 }
             }
         } );
@@ -182,7 +195,7 @@ final class GoldenWireTests
             if ( a.bytes[i] != b.bytes[i] ) return false;
         }
         if ( !a.string.value.equals( b.string.value ) ) return false;
-        if ( !a.wstring.value.equals( b.wstring.value ) ) return false;
+        if ( !a.goStones.value.equals( b.goStones.value ) ) return false;
         if ( a.fixedQ8_8.value != b.fixedQ8_8.value ) return false;
         if ( a.fixedQ16_16.value != b.fixedQ16_16.value ) return false;
         if ( a.fixedQ48_16.value != b.fixedQ48_16.value ) return false;

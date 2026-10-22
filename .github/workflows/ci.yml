@@ -17,6 +17,10 @@ jobs:
       # the release shape: the same suite with assertions off, proving every
       # read-side refusal binds without them
       - run: make test-release JDK_HOME="$JAVA_HOME"
+      # the negative controls: an operation with no runner goes red, and a
+      # reader with one refusal rule deleted fails exactly the vectors
+      # conformance-controls/<rule>.expected names
+      - run: make controls JDK_HOME="$JAVA_HOME"
 
   spec-sync:
     name: STANDARD.md and the corpus match upstream
@@ -60,6 +64,17 @@ jobs:
           fi
           echo "conformance/ matches upstream"
 
+      # conformance-controls/ is vendored the same way: the .expected lists are
+      # the oracle the negative controls are held to, and the reference builds
+      # its own sabotaged readers from the same lists.
+      - name: Compare conformance-controls/ against mas-bandwidth/serialize
+        run: |
+          if ! diff -ru /tmp/upstream-serialize/conformance-controls conformance-controls; then
+            echo "::error::conformance-controls/ has diverged from mas-bandwidth/serialize"
+            exit 1
+          fi
+          echo "conformance-controls/ matches upstream"
+
   # The port exists to be wire compatible; everything else is detail. This job is
   # the only place that claim is MEASURED against the reference itself: the exact
   # release candidate in this repository exchanges bytes with the exact C++
@@ -94,7 +109,7 @@ jobs:
     name: interop with the C++ reference
     runs-on: ubuntu-latest
     env:
-      SERIALIZE_TAG: v1.16.2
+      SERIALIZE_TAG: v2.0.0
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -111,7 +126,10 @@ jobs:
       # no code for. STANDARD.md requires that to be red rather than skipped, so
       # it is checked here rather than assumed.
       - name: The vendored corpus is the pinned release's corpus
-        run: diff -ru /tmp/cpp-serialize/conformance conformance
+        run: |
+          diff -ru /tmp/cpp-serialize/conformance conformance
+          diff -ru /tmp/cpp-serialize/conformance-controls conformance-controls
+          diff -u /tmp/cpp-serialize/STANDARD.md STANDARD.md
 
       # Asserts stay ON (no -DNDEBUG): they are the C++ half of "API misuse
       # panics", and the degenerate ranges the message carries must pass with the

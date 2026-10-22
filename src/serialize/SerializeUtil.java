@@ -2,9 +2,9 @@ package serialize;
 
 /**
  * The stream-independent helpers of the serialize library: bit width
- * calculations, zig-zag conversion, the UTF-8 validator shared by the string
- * write contract and read refusal, and the compressed-float quantization
- * arithmetic pinned by STANDARD.md.
+ * calculations, zig-zag conversion, the UTF-8 validator behind the string
+ * read refusal, the finite tests on raw float bits, and the compressed-float
+ * quantization arithmetic pinned by STANDARD.md.
  */
 public final class SerializeUtil
 {
@@ -86,13 +86,12 @@ public final class SerializeUtil
     }
 
     /*
-        UTF-8 well-formedness, one validator with two callers (STANDARD.md):
-        the WRITE path's contract check — a debug-only assert per the
-        writes-trusted doctrine — and the READ path's refusal rule, which binds
-        in every build mode. Rejects overlong encodings, surrogate code points,
-        values above U+10FFFF, truncated sequences and stray continuation
-        bytes. NUL bytes are VALID UTF-8: the interior-NUL refusal is a
-        separate rule with its own reason.
+        UTF-8 well-formedness under Unicode Table 3-7 (STANDARD.md, "string"):
+        the READ path's refusal rule, invalid_utf8, which binds in every build
+        mode. Rejects overlong encodings, surrogate code points, values above
+        U+10FFFF, truncated sequences, stray continuation bytes and bytes that
+        never appear in UTF-8. NUL bytes are VALID UTF-8: the embedded_nul
+        refusal is a separate rule, and the reader runs it first.
     */
 
     static boolean isValidUtf8( byte[] bytes, int length )
@@ -155,10 +154,10 @@ public final class SerializeUtil
     }
 
     /*
-        The wstring payload is well-formed UTF-16 BY CONTRACT (STANDARD.md):
-        an unpaired surrogate is a writer contract violation, debug-asserted.
-        Java strings are UTF-16 code units natively, so the check is the
-        2-byte-wchar_t pairing discipline of the reference.
+        The string writer's source is well-formed UTF-16 BY CONTRACT: a Java
+        String is UTF-16 code units, and an unpaired surrogate has no UTF-8
+        form. String.getBytes would silently replace it, so a writer handed
+        one is a contract violation, debug-asserted before the encode.
     */
 
     static boolean isValidUtf16( String string )
@@ -196,11 +195,31 @@ public final class SerializeUtil
     }
 
     /**
+     * Is this float finite? Exactly the float32 bit pattern test: the exponent
+     * field is all ones for NaN (any payload, either sign) and for both
+     * infinities, and for nothing else. Every other pattern, -0 and the
+     * subnormals included, is finite. Tested on the raw bits, never on a
+     * converted value, so nothing on the way can quiet a signaling NaN.
+     */
+    public static boolean floatBitsAreFinite( int bits )
+    {
+        return ( bits & 0x7F800000 ) != 0x7F800000;
+    }
+
+    /** Is this double finite? The float64 twin of {@link #floatBitsAreFinite}. */
+    public static boolean doubleBitsAreFinite( long bits )
+    {
+        return ( bits & 0x7FF0000000000000L ) != 0x7FF0000000000000L;
+    }
+
+    /**
      * The quantization step count of a compressed float declaration:
      * ceil( delta / res ), clamped to [1, 4294967040] (the largest float
      * below 2^32). A declaration whose delta or delta/res is not finite in
      * float32 is non-conforming and asserts in debug, per the writer-trusted
-     * model. Returned as a long because the count is an unsigned 32-bit
+     * model. The third condition, a finite decode of the top integer, is
+     * asserted by the writer alone: a reader refuses a non-finite decode at
+     * runtime instead. Returned as a long because the count is an unsigned 32-bit
      * quantity that can exceed Integer.MAX_VALUE.
      */
     public static long compressedFloatMaxIntegerValue( float min, float max, float res )
@@ -274,7 +293,9 @@ public final class SerializeUtil
     /**
      * Reconstructs a float from its wire code: float32 with every step
      * rounding — the quotient rounds, the product rounds BEFORE min is
-     * added, and the sum rounds. No widening, no fused multiply-add.
+     * added, and the sum rounds. No widening, no fused multiply-add. The
+     * result can be an infinity at the top of a declaration that reaches
+     * FLT_MAX, which the reader refuses and the writer asserts against.
      */
     static float compressedFloatReadValue( int integerValue, long maxIntegerValue, float delta, float min )
     {

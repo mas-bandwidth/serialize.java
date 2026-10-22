@@ -14,22 +14,25 @@ final class GoldenWire
 {
     private GoldenWire() {}
 
-    // serialize.h golden_wire_bytes: 112 bytes, verbatim
+    // serialize.h golden_wire_bytes at v2.0.0: 106 bytes, verbatim, and the
+    // whole message STANDARD.md prints under "The whole message"
     static final byte[] GOLDEN_WIRE_BYTES = bytes(
         0x5D, 0xDA, 0xF7, 0xE6, 0xD5, 0x77, 0xDF, 0x56, 0xEF, 0x9F, 0x75, 0x19,
         0x52, 0xBC, 0xDA, 0x0F, 0x49, 0x40, 0xF4, 0x55, 0x55, 0x55, 0x55, 0x55,
         0x55, 0x55, 0xFF, 0xFC, 0xD1, 0x48, 0xE0, 0x59, 0xD1, 0x48, 0xC0, 0x7B,
         0xF3, 0x6A, 0xE2, 0x59, 0xD1, 0x48, 0x84, 0xB7, 0x06, 0xDE, 0xAD, 0xBE,
-        0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0xE3,
-        0x21, 0x00, 0x00, 0xC0, 0x21, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00,
-        0xC0, 0x60, 0x00, 0x80, 0xA2, 0x7C, 0xFC, 0xEC, 0x26, 0xCB, 0xFF, 0xFF,
-        0x4B, 0x1D, 0x1F, 0xEF, 0xD2, 0x1A, 0x1F, 0x01, 0xE9, 0xFF, 0xFF, 0x09,
-        0x19, 0x2A, 0x3B, 0x4C, 0x5D, 0x6E, 0x7F, 0x78, 0x6F, 0x5E, 0x4D, 0x3C,
-        0x2B, 0x1A, 0x09, 0x04 );
+        0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0x06,
+        0xE7, 0xA2, 0x81, 0xE7, 0x9F, 0xB3, 0xC0, 0x60, 0x00, 0x80, 0xA2, 0x7C,
+        0xFC, 0xEC, 0x26, 0xCB, 0xFF, 0xFF, 0x4B, 0x1D, 0x1F, 0xEF, 0xD2, 0x1A,
+        0x1F, 0x01, 0xE9, 0xFF, 0xFF, 0x09, 0x19, 0x2A, 0x3B, 0x4C, 0x5D, 0x6E,
+        0x7F, 0x78, 0x6F, 0x5E, 0x4D, 0x3C, 0x2B, 0x1A, 0x09, 0x04 );
 
-    // the golden stream ends 3 bits into its final byte: 891 consumed bits,
-    // 5 trailing bits the writer must zero and the reader must ignore
-    static final long GOLDEN_BITS = 891;
+    // the last field ends 3 bits into the final byte: a writer processes 843
+    // bits, and leaves the 5 bits of padding zero
+    static final long GOLDEN_BITS = 843;
+
+    // a reader's end consumes that padding, so a reader processes every bit
+    static final long GOLDEN_READ_BITS = 848;
 
     static byte[] bytes( int... values )
     {
@@ -62,7 +65,7 @@ final class GoldenWire
         final IntRef relativeFar = new IntRef();
         final byte[] bytes = new byte[7];
         final Ref<String> string = new Ref<>( "" );
-        final Ref<String> wstring = new Ref<>( "" );
+        final Ref<String> goStones = new Ref<>( "" );
         final LongRef fixedQ8_8 = new LongRef();
         final LongRef fixedQ16_16 = new LongRef();
         final LongRef fixedQ48_16 = new LongRef();
@@ -94,8 +97,9 @@ final class GoldenWire
         byte[] goldenByteData = bytes( 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01 );
         System.arraycopy( goldenByteData, 0, data.bytes, 0, 7 );
         data.string.value = "golden";
-        // built from explicit code points so the source file encoding can never change the golden bytes
-        data.wstring.value = new String( new char[] { 0x043C, 0x0438, 0x0440 } );   // cyrillic, BMP only
+        // go stones, U+7881 U+77F3, built from explicit code points so the
+        // source file encoding can never change the golden bytes
+        data.goStones.value = new String( new char[] { 0x7881, 0x77F3 } );
         data.fixedQ8_8.value = -( 3 * 256 + 64 );                                   // -3.25 in Q8.8
         data.fixedQ16_16.value = 1234 * 65536 + 32768;                              // 1234.5 in Q16.16
         data.fixedQ48_16.value = -( 54321L * 65536 + 12345 );                       // -54321.1883... in Q48.16
@@ -128,7 +132,7 @@ final class GoldenWire
             && stream.serializeAlign()
             && stream.serializeBytes( data.bytes, 7 )
             && stream.serializeString( data.string, 16 )
-            && stream.serializeWideString( data.wstring, 8 )
+            && stream.serializeString( data.goStones, 8 )
             // the fixed point section starts byte aligned, so every byte pinned above it stays put
             && stream.serializeAlign()
             && stream.serializeFixed( data.fixedQ8_8, 8, 8, -100, +100 )
@@ -140,14 +144,16 @@ final class GoldenWire
             // +-2^57 units: 75 bits, the three-group structure
             && stream.serializeFixed128( data.fixedQ112_16Wide, 112, 16, -144115188075855872L, +144115188075855872L )
             // full unit range: 128 bits, the four-group structure
-            && stream.serializeFixed128( data.fixedQ64_64Wide, 64, 64, Long.MIN_VALUE, Long.MAX_VALUE );
+            && stream.serializeFixed128( data.fixedQ64_64Wide, 64, 64, Long.MIN_VALUE, Long.MAX_VALUE )
+            // the message ends here, and so must the stream
+            && stream.serializeEnd();
     }
 
     /**
      * True when every decoded field equals the golden values exactly —
      * including the compressed float, which the golden value pins exactly by
      * construction (5.0 in [0,10] normalizes to exactly 0.5). Floats compare
-     * as bit patterns per the transparency doctrine.
+     * as bit patterns, so -0 and a flushed subnormal cannot hide.
      */
     static boolean matchesGolden( Data data )
     {
@@ -173,7 +179,7 @@ final class GoldenWire
             if ( data.bytes[i] != expected.bytes[i] ) return false;
         }
         if ( !expected.string.value.equals( data.string.value ) ) return false;
-        if ( !expected.wstring.value.equals( data.wstring.value ) ) return false;
+        if ( !expected.goStones.value.equals( data.goStones.value ) ) return false;
         if ( data.fixedQ8_8.value != expected.fixedQ8_8.value ) return false;
         if ( data.fixedQ16_16.value != expected.fixedQ16_16.value ) return false;
         if ( data.fixedQ48_16.value != expected.fixedQ48_16.value ) return false;
