@@ -121,6 +121,16 @@ final class StringTests
             check( both.getRefusal() == Refusal.NONZERO_PADDING, "as nonzero_padding, not past_end" );
         } );
 
+        test( "string: a hostile length is priced against the stream before anything is allocated", () -> {
+            // a 31-bit length near 2^31 in a four byte stream: refused as
+            // past_end, never an allocation of the length the wire claims
+            byte[] hostile = GoldenWire.bytes( 0xFE, 0xFF, 0xFF, 0x7F, 0, 0, 0, 0, 0, 0, 0, 0 );
+            ReadStream reader = new ReadStream( hostile, 4 );
+            Ref<String> value = new Ref<>( "" );
+            check( !reader.serializeString( value, Integer.MAX_VALUE ), "the hostile length is refused" );
+            check( reader.getRefusal() == Refusal.PAST_END, "as past_end" );
+        } );
+
         test( "string: invalid_utf8 and embedded_nul, and NUL wins when a payload breaks both", () -> {
             byte[][] invalid = {
                 GoldenWire.bytes( 0xC0, 0xAF ),             // overlong slash

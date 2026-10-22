@@ -1,7 +1,6 @@
 package serialize;
 
 import java.nio.ByteBuffer;
-import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CodingErrorAction;
@@ -477,7 +476,19 @@ public final class ReadStream implements BitStream
         {
             return false;                   // the length latched its own reason
         }
-        // the bytes, which align
+        // the bytes, which align: the align first, so set padding is refused as
+        // nonzero_padding even when the payload would also run past the end,
+        // then the length is priced against the stream BEFORE the payload
+        // buffer is allocated, so a short hostile stream cannot force an
+        // allocation of up to bufferSize bytes
+        if ( !serializeAlign() )
+        {
+            return false;                   // the align latched its own reason
+        }
+        if ( length.value > reader.getBitsRemaining() / 8 )
+        {
+            return fail( Refusal.PAST_END );
+        }
         byte[] utf8 = new byte[length.value];
         if ( !serializeBytes( utf8, length.value ) )
         {
