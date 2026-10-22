@@ -19,7 +19,7 @@ specification in
 [mas-bandwidth/serialize](https://github.com/mas-bandwidth/serialize),
 which CI checks for drift — is the authority on every byte.
 
-Version 1.2.0 (`SerializeUtil.VERSION`).
+Version 2.0.0 (`SerializeUtil.VERSION`), implementing format 2.0.
 
 If this library helps you, **[please support it](https://www.patreon.com/MasBandwidth/membership)**
 
