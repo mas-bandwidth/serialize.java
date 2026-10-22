@@ -11,6 +11,19 @@ public final class Harness
     private static int tests;
     private static int failed;
     private static int checks;
+    private static boolean quiet;
+
+    /** Prints only the failures: the negative controls run the whole corpus once per control. */
+    public static void setQuiet( boolean value )
+    {
+        quiet = value;
+    }
+
+    /** The number of tests that have failed so far. */
+    public static int failures()
+    {
+        return failed;
+    }
 
     private static final class CheckError extends RuntimeException
     {
@@ -22,7 +35,10 @@ public final class Harness
     public static void test( String name, Runnable body )
     {
         tests++;
-        System.out.printf( "    %s%n", name );
+        if ( !quiet )
+        {
+            System.out.printf( "    %s%n", name );
+        }
         try
         {
             body.run();
@@ -30,12 +46,20 @@ public final class Harness
         catch ( CheckError error )
         {
             failed++;
+            if ( quiet )
+            {
+                System.out.printf( "    %s%n", name );
+            }
             System.out.printf( "        FAILED: %s%n", error.getMessage() );
         }
         catch ( Throwable error )
         {
             // a thrown exception is itself a failure: hostile data must never throw
             failed++;
+            if ( quiet )
+            {
+                System.out.printf( "    %s%n", name );
+            }
             System.out.printf( "        FAILED (threw %s: %s)%n", error.getClass().getName(), error.getMessage() );
             for ( StackTraceElement frame : error.getStackTrace() )
             {
@@ -69,6 +93,28 @@ public final class Harness
         {
             check( actual[i] == expected[i],
                    String.format( "%s: byte %d is 0x%02X, expected 0x%02X", what, i, actual[i], expected[i] ) );
+        }
+    }
+
+    /** Are assertions enabled? The write-side contracts are asserts, and exist only in the checked shape. */
+    public static boolean assertionsEnabled()
+    {
+        boolean enabled = false;
+        assert enabled = true;
+        return enabled;
+    }
+
+    /** Did the body's debug contract fire? */
+    public static boolean fires( Runnable body )
+    {
+        try
+        {
+            body.run();
+            return false;
+        }
+        catch ( AssertionError error )
+        {
+            return true;
         }
     }
 

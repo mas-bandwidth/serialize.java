@@ -1,5 +1,10 @@
 package serialize;
 
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 
 /**
@@ -17,7 +22,12 @@ import java.nio.charset.StandardCharsets;
  * A failed read is terminal: nothing after the failing operation has a
  * defined position, so the stream latches. Every read after the first
  * refusal returns false, consuming no bits and writing no destination, until
- * {@link #reset} points the stream at data again.
+ * {@link #reset} points the stream at data again. {@link #getRefusal} names
+ * the FIRST refusal's reason; the later refusals are its echoes.
+ *
+ * A reader of a packet reads {@link #serializeEnd} after the last field of
+ * the packet's top-level object, with the stream holding exactly the bytes
+ * the writer reported: without it, trailing bytes and padding go unexamined.
  */
 public final class ReadStream implements BitStream
 {
@@ -29,6 +39,18 @@ public final class ReadStream implements BitStream
      * and only {@link #reset} clears it.
      */
     private boolean failed;
+
+    /** The first refusal's reason, NONE until a read refuses. Set with the latch, cleared only by {@link #reset}. */
+    private Refusal refusal = Refusal.NONE;
+
+    /**
+     * Decodes a string payload the validator accepted. REPORT, never
+     * REPLACE: a malformed payload must be refused, and a decoder that
+     * substitutes U+FFFD would hand back text the wire never carried.
+     */
+    private final CharsetDecoder utf8Decoder = StandardCharsets.UTF_8.newDecoder()
+        .onMalformedInput( CodingErrorAction.REPORT )
+        .onUnmappableCharacter( CodingErrorAction.REPORT );
 
     /**
      * @param buffer the buffer to read from. Any array size works; at least
@@ -51,6 +73,7 @@ public final class ReadStream implements BitStream
     {
         reader.reset( buffer, bytes );
         failed = false;
+        refusal = Refusal.NONE;
     }
 
     @Override public boolean isWriting() { return false; }
@@ -63,11 +86,26 @@ public final class ReadStream implements BitStream
         return failed;
     }
 
-    // Sets the latch and reports the refusal in one expression, so a refusal
-    // reads as `return fail();` wherever it occurs.
-    private boolean fail()
+    /**
+     * Why did this stream refuse? The reason for the first refused read since
+     * the stream was created or reset, or {@link Refusal#NONE} if nothing has
+     * been refused.
+     */
+    public Refusal getRefusal()
     {
-        failed = true;
+        return refusal;
+    }
+
+    // Sets the latch and reports the refusal in one expression, so a refusal
+    // reads as `return fail( reason );` wherever it occurs. The FIRST reason
+    // is kept: a refusal on a stream that has already failed is an echo.
+    private boolean fail( Refusal reason )
+    {
+        if ( !failed )
+        {
+            failed = true;
+            refusal = reason;
+        }
         return false;
     }
 
@@ -97,7 +135,7 @@ public final class ReadStream implements BitStream
         assert checkBits32( bits );
         if ( reader.wouldReadPastEnd( bits ) )
         {
-            return fail();
+            return fail( Refusal.PAST_END );
         }
         value.value = reader.readBits( bits );
         return true;
@@ -112,7 +150,7 @@ public final class ReadStream implements BitStream
         {
             if ( reader.wouldReadPastEnd( bits ) )
             {
-                return fail();
+                return fail( Refusal.PAST_END );
             }
             value.value = Integer.toUnsignedLong( reader.readBits( bits ) );
         }
@@ -122,12 +160,12 @@ public final class ReadStream implements BitStream
             // matching the reference macro's composition from two 32-bit operations
             if ( reader.wouldReadPastEnd( 32 ) )
             {
-                return fail();
+                return fail( Refusal.PAST_END );
             }
             long lo = Integer.toUnsignedLong( reader.readBits( 32 ) );
             if ( reader.wouldReadPastEnd( bits - 32 ) )
             {
-                return fail();
+                return fail( Refusal.PAST_END );
             }
             long hi = Integer.toUnsignedLong( reader.readBits( bits - 32 ) );
             value.value = ( hi << 32 ) | lo;
@@ -148,12 +186,12 @@ public final class ReadStream implements BitStream
         }
         if ( reader.wouldReadPastEnd( bits ) )
         {
-            return fail();
+            return fail( Refusal.PAST_END );
         }
         int unsignedValue = reader.readBits( bits );
         if ( Integer.compareUnsigned( unsignedValue, max - min ) > 0 )
         {
-            return fail();
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
         }
         // add in the unsigned domain: wraps when the range is wider than 2^31
         value.value = unsignedValue + min;
@@ -174,7 +212,7 @@ public final class ReadStream implements BitStream
         // one truncation check for the whole value, matching the reference stream method
         if ( reader.wouldReadPastEnd( bits ) )
         {
-            return fail();
+            return fail( Refusal.PAST_END );
         }
         long unsignedValue;
         if ( bits <= 32 )
@@ -189,7 +227,7 @@ public final class ReadStream implements BitStream
         }
         if ( Long.compareUnsigned( unsignedValue, max - min ) > 0 )
         {
-            return fail();
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
         }
         // add in the unsigned domain: wraps when the range is wider than 2^63
         value.value = unsignedValue + min;
@@ -212,12 +250,12 @@ public final class ReadStream implements BitStream
         // one truncation check for the whole value, matching the reference stream method
         if ( reader.wouldReadPastEnd( bits ) )
         {
-            return fail();
+            return fail( Refusal.PAST_END );
         }
         UInt128Value offset = readGroups128( bits );
         if ( offset.compareUnsigned( unsignedMax.subtract( unsignedMin ) ) > 0 )
         {
-            return fail();
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
         }
         // add in the unsigned domain: wraps when the range is wider than 2^127
         value.value = Int128Value.fromUnsigned( offset.add( unsignedMin ) );
@@ -289,13 +327,13 @@ public final class ReadStream implements BitStream
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
         // the low 64-bit half first, then the high half — composed from 32-bit
         // groups with per-group truncation checks, matching the reference macro
-        if ( reader.wouldReadPastEnd( 32 ) ) return fail();
+        if ( reader.wouldReadPastEnd( 32 ) ) return fail( Refusal.PAST_END );
         long a = Integer.toUnsignedLong( reader.readBits( 32 ) );
-        if ( reader.wouldReadPastEnd( 32 ) ) return fail();
+        if ( reader.wouldReadPastEnd( 32 ) ) return fail( Refusal.PAST_END );
         long b = Integer.toUnsignedLong( reader.readBits( 32 ) );
-        if ( reader.wouldReadPastEnd( 32 ) ) return fail();
+        if ( reader.wouldReadPastEnd( 32 ) ) return fail( Refusal.PAST_END );
         long c = Integer.toUnsignedLong( reader.readBits( 32 ) );
-        if ( reader.wouldReadPastEnd( 32 ) ) return fail();
+        if ( reader.wouldReadPastEnd( 32 ) ) return fail( Refusal.PAST_END );
         long d = Integer.toUnsignedLong( reader.readBits( 32 ) );
         value.value = new UInt128Value( ( d << 32 ) | c, ( b << 32 ) | a );
         return true;
@@ -307,7 +345,7 @@ public final class ReadStream implements BitStream
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
         if ( reader.wouldReadPastEnd( 1 ) )
         {
-            return fail();
+            return fail( Refusal.PAST_END );
         }
         value.value = reader.readBits( 1 ) != 0;
         return true;
@@ -319,11 +357,18 @@ public final class ReadStream implements BitStream
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
         if ( reader.wouldReadPastEnd( 32 ) )
         {
-            return fail();
+            return fail( Refusal.PAST_END );
         }
-        // bit transparent: the read returns exactly the bits read — NaN payloads,
-        // signaling NaNs, infinities, negative zero and denormals all pass through
-        value.value = Float.intBitsToFloat( reader.readBits( 32 ) );
+        // STANDARD.md, "Finite values only": the test runs on the RAW BITS,
+        // before any conversion, and refuses NaN with any payload or sign and
+        // both infinities before the destination is written. Every finite
+        // pattern, -0 and the subnormals included, comes back bit exact.
+        int bits = reader.readBits( 32 );
+        if ( !SerializeUtil.floatBitsAreFinite( bits ) )
+        {
+            return fail( Refusal.NON_FINITE_FLOAT );
+        }
+        value.value = Float.intBitsToFloat( bits );
         return true;
     }
 
@@ -335,15 +380,21 @@ public final class ReadStream implements BitStream
         // reference macro's composition
         if ( reader.wouldReadPastEnd( 32 ) )
         {
-            return fail();
+            return fail( Refusal.PAST_END );
         }
         long lo = Integer.toUnsignedLong( reader.readBits( 32 ) );
         if ( reader.wouldReadPastEnd( 32 ) )
         {
-            return fail();
+            return fail( Refusal.PAST_END );
         }
         long hi = Integer.toUnsignedLong( reader.readBits( 32 ) );
-        value.value = Double.longBitsToDouble( ( hi << 32 ) | lo );
+        long bits = ( hi << 32 ) | lo;
+        // the finite rule at this width, on the raw bits, before the destination is written
+        if ( !SerializeUtil.doubleBitsAreFinite( bits ) )
+        {
+            return fail( Refusal.NON_FINITE_FLOAT );
+        }
+        value.value = Double.longBitsToDouble( bits );
         return true;
     }
 
@@ -356,15 +407,24 @@ public final class ReadStream implements BitStream
         float delta = max - min;
         if ( reader.wouldReadPastEnd( bits ) )
         {
-            return fail();
+            return fail( Refusal.PAST_END );
         }
         int integerValue = reader.readBits( bits );
         // reject an integer above maxIntegerValue smuggled into the bit headroom
         if ( Integer.toUnsignedLong( integerValue ) > maxIntegerValue )
         {
-            return fail();
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
         }
-        value.value = SerializeUtil.compressedFloatReadValue( integerValue, maxIntegerValue, delta, min );
+        // STANDARD.md, "The decode must be finite": every operand is finite and
+        // the integer is in range, and still the final add can round past
+        // FLT_MAX — [3 * 2^103, FLT_MAX] at resolution 2^104 decodes its top
+        // integer to +inf. Refused, never handed back.
+        float decoded = SerializeUtil.compressedFloatReadValue( integerValue, maxIntegerValue, delta, min );
+        if ( !SerializeUtil.floatBitsAreFinite( Float.floatToRawIntBits( decoded ) ) )
+        {
+            return fail( Refusal.NON_FINITE_FLOAT );
+        }
+        value.value = decoded;
         return true;
     }
 
@@ -374,16 +434,18 @@ public final class ReadStream implements BitStream
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
         if ( bytes < 0 )
         {
-            return fail();
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
         }
+        // the align first, so set padding is refused as nonzero_padding even
+        // when the payload would also run past the end
         if ( !serializeAlign() )
         {
-            return fail();
+            return false;                   // the align latched its own reason
         }
         // compare in bytes rather than bits, consistent with the reference's bookkeeping
         if ( bytes > reader.getBitsRemaining() / 8 )
         {
-            return fail();
+            return fail( Refusal.PAST_END );
         }
         reader.readBytes( data, bytes );
         return true;
@@ -396,11 +458,11 @@ public final class ReadStream implements BitStream
         int alignBits = reader.getAlignBits();
         if ( reader.wouldReadPastEnd( alignBits ) )
         {
-            return fail();
+            return fail( Refusal.PAST_END );
         }
         if ( !reader.readAlign() )
         {
-            return fail();                  // the padding was not zero
+            return fail( Refusal.NONZERO_PADDING );     // the padding was not zero
         }
         return true;
     }
@@ -413,95 +475,43 @@ public final class ReadStream implements BitStream
         IntRef length = new IntRef();
         if ( !serializeInt( length, 0, bufferSize - 1 ) )
         {
-            return fail();
+            return false;                   // the length latched its own reason
         }
         // the bytes, which align
         byte[] utf8 = new byte[length.value];
         if ( !serializeBytes( utf8, length.value ) )
         {
-            return fail();
+            return false;                   // the bytes latched their own reason
         }
-        // STANDARD.md, "Readers must refuse malformed string payloads".
-        // Interior NUL first: a zero byte among the transmitted bytes gives the
-        // payload two lengths, and everything between them rides invisibly.
-        // NUL is valid UTF-8, so the validator below cannot catch it.
+        // STANDARD.md, "string". Embedded NUL first, over the WHOLE payload: a
+        // zero byte among the transmitted bytes gives the payload two lengths,
+        // and everything between them rides invisibly. NUL is valid UTF-8, so
+        // the validator below cannot catch it, and a payload that breaks both
+        // rules is embedded_nul.
         for ( int i = 0; i < length.value; i++ )
         {
             if ( utf8[i] == 0 )
             {
-                return fail();
+                return fail( Refusal.EMBEDDED_NUL );
             }
         }
         if ( !SerializeUtil.isValidUtf8( utf8, length.value ) )
         {
-            return fail();
+            return fail( Refusal.INVALID_UTF8 );
         }
-        value.value = new String( utf8, StandardCharsets.UTF_8 );
-        return true;
-    }
-
-    @Override
-    public boolean serializeWideString( Ref<String> value, int bufferSize )
-    {
-        if ( failed ) return false;         // the latch: a failed stream refuses everything after
-        IntRef length = new IntRef();
-        if ( !serializeInt( length, 0, bufferSize - 1 ) )
+        // a strict decode of what the validator accepted: no replacement, no
+        // normalization, no stripped byte order mark, so the string round trips
+        // to exactly the bytes read
+        String decoded;
+        try
         {
-            return fail();
+            decoded = utf8Decoder.reset().decode( ByteBuffer.wrap( utf8 ) ).toString();
         }
-        // each group is one UTF-16 code unit, and malformed payloads are refused
-        // in every build mode: a group above 0xFFFF is not a code unit, an
-        // interior NUL gives the payload two lengths, and the pair discipline
-        // refuses a high surrogate without its low, a low with no high before
-        // it, and a dangling high as the final group. Well-formed pairs pass —
-        // they are how astral text travels.
-        char[] output = new char[length.value];
-        char pending = 0;                       // a high surrogate awaiting its pair
-        boolean havePending = false;
-        int outputIndex = 0;
-        for ( int i = 0; i < length.value; i++ )
+        catch ( CharacterCodingException error )
         {
-            if ( reader.wouldReadPastEnd( 32 ) )
-            {
-                return fail();
-            }
-            int character = reader.readBits( 32 );
-            if ( Integer.compareUnsigned( character, 0xFFFF ) > 0 )
-            {
-                return fail();                   // not a UTF-16 code unit: nothing conforming emits one
-            }
-            if ( character == 0 )
-            {
-                return fail();                   // interior NUL: the two-lengths smuggling primitive
-            }
-            if ( havePending )
-            {
-                if ( character < 0xDC00 || character > 0xDFFF )
-                {
-                    return fail();               // high surrogate without its low
-                }
-                output[outputIndex++] = pending;
-                output[outputIndex++] = (char) character;
-                havePending = false;
-                continue;
-            }
-            if ( character >= 0xDC00 && character <= 0xDFFF )
-            {
-                return fail();                   // low surrogate with no high before it
-            }
-            if ( character >= 0xD800 && character <= 0xDBFF )
-            {
-                pending = (char) character;
-                havePending = true;
-                continue;
-            }
-            output[outputIndex++] = (char) character;
+            return fail( Refusal.INVALID_UTF8 );
         }
-        if ( havePending )
-        {
-            return fail();                       // the final group is a dangling high surrogate
-        }
-        value.value = new String( output, 0, outputIndex );
+        value.value = decoded;
         return true;
     }
 
@@ -514,7 +524,7 @@ public final class ReadStream implements BitStream
         // the one-bit tier
         if ( reader.wouldReadPastEnd( 1 ) )
         {
-            return fail();
+            return fail( Refusal.PAST_END );
         }
         if ( reader.readBits( 1 ) != 0 )
         {
@@ -526,7 +536,7 @@ public final class ReadStream implements BitStream
         {
             if ( reader.wouldReadPastEnd( 1 ) )
             {
-                return fail();
+                return fail( Refusal.PAST_END );
             }
             if ( reader.readBits( 1 ) != 0 )
             {
@@ -535,12 +545,12 @@ public final class ReadStream implements BitStream
                 int bits = SerializeUtil.bitsRequired( tierMin, tierMax );
                 if ( reader.wouldReadPastEnd( bits ) )
                 {
-                    return fail();
+                    return fail( Refusal.PAST_END );
                 }
                 int unsignedValue = reader.readBits( bits );
                 if ( Integer.compareUnsigned( unsignedValue, tierMax - tierMin ) > 0 )
                 {
-                    return fail();
+                    return fail( Refusal.VALUE_OUT_OF_RANGE );
                 }
                 long difference = Integer.toUnsignedLong( unsignedValue ) + tierMin;
                 return acceptIntRelative( previous, previous + difference, current );
@@ -549,12 +559,21 @@ public final class ReadStream implements BitStream
 
         // the final tier transmits current, not the difference. Its 32 raw bits
         // are unsigned, so a value with the top bit set lies outside the domain
-        // and the reconstruction check below refuses it.
+        // and the reconstruction check refuses it.
         if ( reader.wouldReadPastEnd( 32 ) )
         {
-            return fail();
+            return fail( Refusal.PAST_END );
         }
         long absolute = Integer.toUnsignedLong( reader.readBits( 32 ) );
+        // STANDARD.md, "The absolute tier is canonical too". The domain and
+        // ordering rule comes first, so a current outside the domain is
+        // value_out_of_range whatever its difference; then a difference a
+        // bounded tier carries is a second encoding of its value. Both in a
+        // long, which cannot wrap.
+        if ( absolute <= Integer.MAX_VALUE && absolute > previous && absolute - previous <= 69914 )
+        {
+            return fail( Refusal.NON_CANONICAL );
+        }
         return acceptIntRelative( previous, absolute, current );
     }
 
@@ -566,11 +585,11 @@ public final class ReadStream implements BitStream
     {
         if ( reconstructed < 0 || reconstructed > Integer.MAX_VALUE )
         {
-            return fail();
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
         }
         if ( reconstructed <= previous )
         {
-            return fail();
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
         }
         current.value = (int) reconstructed;
         return true;
@@ -607,7 +626,7 @@ public final class ReadStream implements BitStream
         {
             if ( reader.wouldReadPastEnd( bits ) )
             {
-                return fail();
+                return fail( Refusal.PAST_END );
             }
             offset = Integer.toUnsignedLong( reader.readBits( bits ) );
         }
@@ -617,12 +636,12 @@ public final class ReadStream implements BitStream
             // two stream-level 32-bit operations
             if ( reader.wouldReadPastEnd( 32 ) )
             {
-                return fail();
+                return fail( Refusal.PAST_END );
             }
             long lo = Integer.toUnsignedLong( reader.readBits( 32 ) );
             if ( reader.wouldReadPastEnd( bits - 32 ) )
             {
-                return fail();
+                return fail( Refusal.PAST_END );
             }
             long hi = Integer.toUnsignedLong( reader.readBits( bits - 32 ) );
             offset = ( hi << 32 ) | lo;
@@ -631,7 +650,7 @@ public final class ReadStream implements BitStream
         // reject raw values outside [rawMin,rawMax] smuggled into the bit headroom — reject, never clamp
         if ( Long.compareUnsigned( offset, rawRange ) > 0 )
         {
-            return fail();
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
         }
         value.value = rawMin + offset;
         return true;
@@ -668,34 +687,34 @@ public final class ReadStream implements BitStream
         long group3 = 0;
         if ( bits <= 32 )
         {
-            if ( reader.wouldReadPastEnd( bits ) ) return fail();
+            if ( reader.wouldReadPastEnd( bits ) ) return fail( Refusal.PAST_END );
             group0 = Integer.toUnsignedLong( reader.readBits( bits ) );
         }
         else if ( bits <= 64 )
         {
-            if ( reader.wouldReadPastEnd( 32 ) ) return fail();
+            if ( reader.wouldReadPastEnd( 32 ) ) return fail( Refusal.PAST_END );
             group0 = Integer.toUnsignedLong( reader.readBits( 32 ) );
-            if ( reader.wouldReadPastEnd( bits - 32 ) ) return fail();
+            if ( reader.wouldReadPastEnd( bits - 32 ) ) return fail( Refusal.PAST_END );
             group1 = Integer.toUnsignedLong( reader.readBits( bits - 32 ) );
         }
         else if ( bits <= 96 )
         {
-            if ( reader.wouldReadPastEnd( 32 ) ) return fail();
+            if ( reader.wouldReadPastEnd( 32 ) ) return fail( Refusal.PAST_END );
             group0 = Integer.toUnsignedLong( reader.readBits( 32 ) );
-            if ( reader.wouldReadPastEnd( 32 ) ) return fail();
+            if ( reader.wouldReadPastEnd( 32 ) ) return fail( Refusal.PAST_END );
             group1 = Integer.toUnsignedLong( reader.readBits( 32 ) );
-            if ( reader.wouldReadPastEnd( bits - 64 ) ) return fail();
+            if ( reader.wouldReadPastEnd( bits - 64 ) ) return fail( Refusal.PAST_END );
             group2 = Integer.toUnsignedLong( reader.readBits( bits - 64 ) );
         }
         else
         {
-            if ( reader.wouldReadPastEnd( 32 ) ) return fail();
+            if ( reader.wouldReadPastEnd( 32 ) ) return fail( Refusal.PAST_END );
             group0 = Integer.toUnsignedLong( reader.readBits( 32 ) );
-            if ( reader.wouldReadPastEnd( 32 ) ) return fail();
+            if ( reader.wouldReadPastEnd( 32 ) ) return fail( Refusal.PAST_END );
             group1 = Integer.toUnsignedLong( reader.readBits( 32 ) );
-            if ( reader.wouldReadPastEnd( 32 ) ) return fail();
+            if ( reader.wouldReadPastEnd( 32 ) ) return fail( Refusal.PAST_END );
             group2 = Integer.toUnsignedLong( reader.readBits( 32 ) );
-            if ( reader.wouldReadPastEnd( bits - 96 ) ) return fail();
+            if ( reader.wouldReadPastEnd( bits - 96 ) ) return fail( Refusal.PAST_END );
             group3 = Integer.toUnsignedLong( reader.readBits( bits - 96 ) );
         }
         UInt128Value offset = new UInt128Value( ( group3 << 32 ) | group2, ( group1 << 32 ) | group0 );
@@ -703,7 +722,7 @@ public final class ReadStream implements BitStream
         // reject raw values outside [rawMin,rawMax] smuggled into the bit headroom — reject, never clamp
         if ( offset.compareUnsigned( rawRange ) > 0 )
         {
-            return fail();
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
         }
         value.value = Int128Value.fromUnsigned( rawMin.add( offset ) );
         return true;
@@ -714,6 +733,36 @@ public final class ReadStream implements BitStream
     {
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
         return object.serialize( this );
+    }
+
+    /**
+     * STANDARD.md, "end": the object ends at the bit index after its last
+     * field, and the stream must end there too. Consults the failure state
+     * first, like every read; then refuses a whole byte or more left over as
+     * trailing_data, which is checked before the padding; then reads the
+     * final byte's remaining 0 to 7 bits and refuses any set one as
+     * nonzero_padding. An accepted end leaves the stream exactly consumed.
+     */
+    @Override
+    public boolean serializeEnd()
+    {
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
+        long remaining = reader.getBitsRemaining();
+        if ( remaining >= 8 )
+        {
+            return fail( Refusal.TRAILING_DATA );
+        }
+        // fewer than 8 bits remain here, so this is all of them: the final byte's padding
+        int paddingBits = (int) ( remaining % 8 );
+        if ( paddingBits > 0 )
+        {
+            int padding = reader.readBits( paddingBits );
+            if ( padding != 0 )
+            {
+                return fail( Refusal.NONZERO_PADDING );
+            }
+        }
+        return true;
     }
 
     @Override

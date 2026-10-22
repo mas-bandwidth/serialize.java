@@ -63,6 +63,7 @@ final class IntRelativeTests
             ReadStream reader = new ReadStream( buffer, 8 );
             IntRef current = new IntRef();
             check( !reader.serializeIntRelative( 100, current ), "50 after 100 refused" );
+            check( reader.getRefusal() == Refusal.VALUE_OUT_OF_RANGE, "as value_out_of_range" );
         } );
 
         test( "intRelative: the whole domain travels, from zero to the top", () -> {
@@ -127,6 +128,49 @@ final class IntRelativeTests
             IntRef current = new IntRef( 0x5E5E5E5E );
             check( !reader.serializeIntRelative( 100, current ), "top bit set refused" );
             checkEqual( current.value, 0x5E5E5E5E, "the refusal wrote nothing" );
+        } );
+
+        test( "intRelative: the absolute tier is canonical — a bounded difference there is non_canonical", () -> {
+            // { previous, current carried in the absolute tier, the reason a reader must give, or null to accept }
+            Object[][] cases = {
+                { 100, 101L, Refusal.NON_CANONICAL },                       // a difference of one: the one-bit tier's
+                { 100, 100L + 69914, Refusal.NON_CANONICAL },               // the last bounded difference
+                { 100, 100L + 69915, null },                                // the first absolute difference
+                { 0, (long) Integer.MAX_VALUE, null },                      // the domain, end to end
+                // the domain and ordering rule comes first: past the domain is
+                // value_out_of_range whatever the difference, which a reader that
+                // subtracts in 32 bits or tests the difference first gets wrong
+                { Integer.MAX_VALUE - 1, 0x80000000L, Refusal.VALUE_OUT_OF_RANGE },
+                { 100, 100L, Refusal.VALUE_OUT_OF_RANGE },                  // not increasing
+            };
+            for ( Object[] c : cases )
+            {
+                int previous = (Integer) c[0];
+                long absolute = (Long) c[1];
+                Refusal reason = (Refusal) c[2];
+
+                byte[] buffer = new byte[8 + 8];
+                WriteStream writer = new WriteStream( buffer, 8 );
+                check( writer.serializeBits( new IntRef( 0 ), 6 ) );            // six false flags: the absolute tier
+                check( writer.serializeBits( new IntRef( (int) absolute ), 32 ) );
+                writer.flush();
+
+                ReadStream reader = new ReadStream( buffer, (int) writer.getBytesProcessed() );
+                IntRef current = new IntRef( 0x5E5E5E5E );
+                boolean ok = reader.serializeIntRelative( previous, current );
+                String what = previous + " -> " + absolute;
+                if ( reason == null )
+                {
+                    check( ok, what + " accepted" );
+                    checkEqual( current.value, absolute, what + " decodes" );
+                }
+                else
+                {
+                    check( !ok, what + " refused" );
+                    check( reader.getRefusal() == reason, what + " refused as " + reason + ", not " + reader.getRefusal() );
+                    checkEqual( current.value, 0x5E5E5E5E, what + ": the refusal wrote nothing" );
+                }
+            }
         } );
 
         test( "intRelative: a doctored tier payload out of range refuses", () -> {

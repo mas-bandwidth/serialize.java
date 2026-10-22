@@ -10,6 +10,7 @@ import serialize.LongRef;
 import serialize.MeasureStream;
 import serialize.ReadStream;
 import serialize.Ref;
+import serialize.Refusal;
 import serialize.UInt128Value;
 import serialize.WriteStream;
 
@@ -23,9 +24,12 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static serialize.tests.Harness.check;
 import static serialize.tests.Harness.test;
@@ -59,14 +63,25 @@ import static serialize.tests.Harness.test;
  * {@code measure_at_least} is run through the measure stream, as a floor rather
  * than an equality, because a measure is a bound and not the packet size.
  *
- * A refused vector must be refused, must leave the caller's scalar destination
- * holding the sentinel it was seeded with, and must leave the stream TERMINAL.
+ * A vector carrying {@code writer_input} hands the writer that float32 and
+ * requires the record's bytes exactly, on a refused vector too: its input is
+ * the record's, not the decode.
+ *
+ * A refused vector must be refused FOR THE REASON IT STATES, from the closed
+ * list in STANDARD.md, and the reason compared is the stream's first; it must
+ * leave the caller's scalar destination holding the sentinel it was seeded
+ * with, and must leave the stream TERMINAL.
  * Terminality is checked by BEHAVIOR rather than by an accessor, so the check
  * is the same one every port in the family runs: every later step of a sequence
  * must refuse too, and a further read the vector does not name must fail,
  * consume no bits and write nothing to its own destination. STANDARD.md leaves
  * a caller-owned BUFFER unspecified after a refusal — {@code bytes},
- * {@code string} and {@code wstring} — so those destinations are not checked.
+ * and {@code string} — so those destinations are not checked.
+ *
+ * NEGATIVE CONTROLS run this runner through {@link #runControl}, with one
+ * rule of the library deleted, and require the failing vectors to be EXACTLY
+ * the ones {@code conformance-controls/<rule>.expected} names. {@link Controls}
+ * builds those readers.
  *
  * THE BUFFER CONTRACT. Every stream presented here carries the eight bytes of
  * slack {@link serialize.BitReader} requires, filled with a non-zero pattern,
@@ -107,6 +122,14 @@ public final class ConformanceTests
 
     private static int measureChecks;
 
+    private static int writerInputChecks;
+
+    // vector names are unique across the corpus
+    private static final Set<String> names = new HashSet<>();
+
+    // the vectors that failed, by name, for the negative controls
+    private static final Set<String> failedNames = new LinkedHashSet<>();
+
     /**
      * Runs this suite on its own ({@code java serialize.tests.ConformanceTests}), so
      * the interop job can hold this reader and the pinned C++ reader to the same
@@ -120,7 +143,68 @@ public final class ConformanceTests
 
     static void run()
     {
-        List<Path> files = corpusFiles();
+        run( corpusFiles() );
+    }
+
+    /**
+     * A NEGATIVE CONTROL's verdict: runs the files quietly and reports whether
+     * the vectors that failed are exactly the ones the expected list names,
+     * with no failure outside any vector. A null list runs the files and
+     * reports whether the run went red at all, which is the unknown operation
+     * control's verdict.
+     */
+    public static boolean runControl( List<Path> files, Path expected )
+    {
+        Harness.setQuiet( true );
+        run( files );
+        if ( expected == null )
+        {
+            return Harness.failures() > 0;
+        }
+        Set<String> expectedNames = new LinkedHashSet<>();
+        try
+        {
+            for ( String line : Files.readAllLines( expected ) )
+            {
+                String name = line.trim();
+                if ( !name.isEmpty() && !name.startsWith( "#" ) )
+                {
+                    expectedNames.add( name );
+                }
+            }
+        }
+        catch ( IOException error )
+        {
+            throw new UncheckedIOException( error );
+        }
+        boolean match = !expectedNames.isEmpty();
+        for ( String name : expectedNames )
+        {
+            if ( !failedNames.contains( name ) )
+            {
+                System.out.printf( "    CONTROL: %s should have failed and passed%n", name );
+                match = false;
+            }
+        }
+        for ( String name : failedNames )
+        {
+            if ( !expectedNames.contains( name ) )
+            {
+                System.out.printf( "    CONTROL: %s failed and is not the control's rule%n", name );
+                match = false;
+            }
+        }
+        if ( Harness.failures() != failedNames.size() )
+        {
+            System.out.printf( "    CONTROL: %d failure(s) outside any vector%n", Harness.failures() - failedNames.size() );
+            match = false;
+        }
+        System.out.printf( "    %d vector(s) failed, the control names %d%n", failedNames.size(), expectedNames.size() );
+        return match;
+    }
+
+    private static void run( List<Path> files )
+    {
         test( "conformance: the vendored corpus is present", () -> {
             check( !files.isEmpty(), "no vector files under " + CORPUS.toAbsolutePath() );
         } );
@@ -135,12 +219,22 @@ public final class ConformanceTests
             } );
             for ( Vector vector : vectors )
             {
-                test( "conformance " + fileName + ": " + vector.name, vector::run );
+                test( "conformance " + fileName + ": " + vector.name, () -> {
+                    try
+                    {
+                        vector.run();
+                    }
+                    catch ( RuntimeException | Error error )
+                    {
+                        failedNames.add( vector.name );
+                        throw error;
+                    }
+                } );
             }
         }
 
-        System.out.printf( "    %d vectors from %d file(s): %d writer checks, %d measure checks%n",
-                           vectorsChecked, files.size(), writerChecks, measureChecks );
+        System.out.printf( "    %d vectors from %d file(s): %d writer checks, %d writer input checks, %d measure checks%n",
+                           vectorsChecked, files.size(), writerChecks, writerInputChecks, measureChecks );
     }
 
     // Discovery, not a list of filenames: a vendored file no one named still runs.
@@ -298,8 +392,8 @@ public final class ConformanceTests
         COMPRESSED_FLOAT,
         BYTES,
         STRING,
-        WSTRING,
         FIXED,
+        END,
         OBJECT                              // opens a nested object over the steps that follow
     }
 
@@ -435,13 +529,6 @@ public final class ConformanceTests
                 step.text = value.value;
                 return ok;
             }
-            case WSTRING:
-            {
-                Ref<String> value = new Ref<>( step.text );
-                boolean ok = stream.serializeWideString( value, step.width );
-                step.text = value.value;
-                return ok;
-            }
             case FIXED:
             {
                 if ( step.integerBits + step.fractionBits == 128 )
@@ -458,6 +545,9 @@ public final class ConformanceTests
                 step.number = BigInteger.valueOf( value.value );
                 return ok;
             }
+            case END:
+                return stream.serializeEnd();
+
             case OBJECT:
             default:
                 // nesting is driven by runSteps, which owns the step range an object
@@ -547,20 +637,6 @@ public final class ConformanceTests
         return text.toString();
     }
 
-    private static String hexCodeUnits( String value )
-    {
-        StringBuilder text = new StringBuilder();
-        for ( int i = 0; i < value.length(); i++ )
-        {
-            if ( text.length() > 0 )
-            {
-                text.append( ' ' );
-            }
-            text.append( String.format( "%04X", (int) value.charAt( i ) ) );
-        }
-        return text.toString();
-    }
-
     private static BigInteger stepPattern( Step step )
     {
         if ( valueIsABitPattern( step.kind ) )
@@ -592,13 +668,12 @@ public final class ConformanceTests
                 byte[] utf8 = step.text.getBytes( StandardCharsets.UTF_8 );
                 return hexBytes( utf8, utf8.length );
             }
-            case WSTRING:
-                return hexCodeUnits( step.text );
             case ALIGN:
+            case END:
             case OBJECT:
             default:
-                // neither has a value of its own; for align the corpus states the
-                // padding it consumed, which a conforming read always finds zero
+                // none has a value of its own; for align and end the corpus states
+                // the padding consumed, which a conforming read always finds zero
                 return "0";
         }
     }
@@ -625,12 +700,15 @@ public final class ConformanceTests
         final List<String> stepWords = new ArrayList<>();
         byte[] bytes = new byte[0];
         boolean refused;
+        String refusal = "";                // the reason a refused vector states
         String expected = "";
         long consumed;
         boolean hasConsumed;
         long measureAtLeast;
         boolean hasMeasure;
         boolean writerCanonical;
+        boolean hasWriterInput;
+        int writerInputBits;
 
         Vector( Path file )
         {
@@ -672,9 +750,16 @@ public final class ConformanceTests
                     bytes = hex( value );
                     break;
                 case "expect":
-                    if ( value.equals( "refused" ) )
+                    if ( value.equals( "refused" ) || value.startsWith( "refused " ) )
                     {
+                        // the reason is mandatory and comes from the closed list: a
+                        // bare `refused`, or a word the list does not hold, is a
+                        // malformed vector rather than a looser one
+                        String reason = value.substring( "refused".length() ).trim();
+                        check( Refusal.fromSpelling( reason ) != null,
+                               "expect refused must state a reason from the closed list, not '" + reason + "'" );
                         refused = true;
+                        refusal = reason;
                     }
                     else
                     {
@@ -698,6 +783,15 @@ public final class ConformanceTests
                     check( value.equals( "canonical" ), "unknown writer mode '" + value + "'" );
                     writerCanonical = true;
                     break;
+                case "writer_input":
+                {
+                    int equals = value.indexOf( '=' );
+                    check( equals > 0 && value.substring( 0, equals ).trim().equals( "bits" ),
+                           "malformed writer_input: " + value );
+                    writerInputBits = parseNumber( value.substring( equals + 1 ).trim() ).intValue();
+                    hasWriterInput = true;
+                    break;
+                }
                 default:
                     check( false, "unknown vector key: " + key );
                     break;
@@ -740,7 +834,7 @@ public final class ConformanceTests
                 case "count":
                     return operation.equals( "bytes" );
                 case "buffer_size":
-                    return operation.equals( "string" ) || operation.equals( "wstring" );
+                    return operation.equals( "string" );
                 case "previous":
                     return operation.equals( "int_relative" );
                 case "res":
@@ -826,10 +920,9 @@ public final class ConformanceTests
                     step.kind = Kind.STRING;
                     step.width = parseNumber( words[1] ).intValue();
                     return step;
-                case "wstring":
-                    check( words.length == 2, "malformed step: " + text );
-                    step.kind = Kind.WSTRING;
-                    step.width = parseNumber( words[1] ).intValue();
+                case "end":
+                    check( words.length == 1, "malformed step: " + text );
+                    step.kind = Kind.END;
                     return step;
                 case "int":
                 case "int64":
@@ -940,9 +1033,8 @@ public final class ConformanceTests
                     step.kind = Kind.STRING;
                     step.width = intParam( "buffer_size" );
                     break;
-                case "wstring":
-                    step.kind = Kind.WSTRING;
-                    step.width = intParam( "buffer_size" );
+                case "end":
+                    step.kind = Kind.END;
                     break;
                 case "fixed":
                     step.kind = Kind.FIXED;
@@ -969,6 +1061,10 @@ public final class ConformanceTests
         void run()
         {
             vectorsChecked++;
+            if ( name == null || !names.add( name ) )
+            {
+                fail( "the vector name '" + name + "' is not unique across the corpus" );
+            }
             for ( String paramName : params.keySet() )
             {
                 if ( !operationTakesParam( operation, paramName ) )
@@ -984,6 +1080,13 @@ public final class ConformanceTests
             List<Step> steps = buildSteps();
 
             runReader( steps );
+
+            // the writer input leg stands alone: its input is the record's, not
+            // the decode, so it runs on refused vectors too
+            if ( hasWriterInput )
+            {
+                runWriterInput( buildSteps() );
+            }
 
             // the writer and the measure are handed the values the reader decoded,
             // so a canonical vector's round trip is decode then re-emit
@@ -1022,9 +1125,19 @@ public final class ConformanceTests
                     fail( "the read succeeded, the corpus requires refusal" );
                 }
 
+                // STANDARD.md, "Refusal reasons": the refusal must be for the
+                // reason the vector states, and the reason is the FIRST
+                // refusal's. A refusal under another rule is a disagreement
+                // about the format however red the stream ends up.
+                String reason = stream.getRefusal().toString();
+                if ( !reason.equals( refusal ) )
+                {
+                    fail( "refused for " + reason + ", the corpus states " + refusal );
+                }
+
                 // STANDARD.md, "A refused primitive read must leave its destination
                 // unwritten". The rule reaches the scalars only: a read into a
-                // caller-owned buffer — bytes, string and wstring — leaves that
+                // caller-owned buffer — bytes and string — leaves that
                 // buffer unspecified after a refusal, so those are not checked.
                 Step failedStep = walk.failedStep;
                 if ( failedStep != null )
@@ -1154,6 +1267,44 @@ public final class ConformanceTests
                     fail( "the writer emitted " + hexBytes( scratch, (int) written )
                           + ", the corpus states " + hexBytes( bytes, bytes.length ) );
                 }
+            }
+        }
+
+        /**
+         * The writer input leg. A canonical vector can only re-emit the value it
+         * decoded, which lands on a quantum where every plausible arithmetic
+         * agrees, so a vector carrying {@code writer_input} hands the writer the
+         * value a caller would have, between quanta or in the fusion band, and
+         * the emission must be the vector's bytes exactly.
+         */
+        private void runWriterInput( List<Step> steps )
+        {
+            writerInputChecks++;
+            if ( steps.size() != 1 || steps.get( 0 ).kind != Kind.COMPRESSED_FLOAT )
+            {
+                fail( "writer_input is only meaningful on a single compressed_float" );
+            }
+            steps.get( 0 ).bits = BigInteger.valueOf( Integer.toUnsignedLong( writerInputBits ) );
+
+            byte[] scratch = new byte[512];
+            Arrays.fill( scratch, SLACK_FILL );
+            WriteStream stream = new WriteStream( scratch, scratch.length );
+            if ( !runSteps( stream, steps, 0, steps.size(), new Walk() ) )
+            {
+                fail( "the writer refused its input" );
+            }
+            stream.flush();
+
+            long written = stream.getBytesProcessed();
+            boolean same = written == bytes.length;
+            for ( int i = 0; same && i < written; i++ )
+            {
+                same = scratch[i] == bytes[i];
+            }
+            if ( !same )
+            {
+                fail( "the writer handed its input emitted " + hexBytes( scratch, (int) written )
+                      + ", the corpus states " + hexBytes( bytes, bytes.length ) );
             }
         }
 

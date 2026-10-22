@@ -39,14 +39,12 @@ import java.util.List;
  * widths and on fixed point; the domain edges of int, int64, int128 and
  * int_relative; the maximum widths of bits, uint128 and the four group fixed point
  * path; both sides of the alignment rule, including the align inside a zero length
- * bytes; empty and full strings; and the wide string cases the surrogate rule
- * governs, up to the largest code unit.
+ * bytes; empty, full and multi-byte strings; the float and double edges, -0
+ * and the subnormals included; and the end, after the last field.
  *
- * WHAT IT DELIBERATELY DOES NOT CARRY: a NaN payload. STANDARD.md's bit
- * transparency claim covers it, but a NaN's payload bits do not survive every
- * language's float type on the way to the wire, so a difference here would say
- * nothing about the wire format. This port pins its own NaN patterns in its own
- * suite, where the claim can be tested honestly.
+ * WHAT IT DOES NOT CARRY: NaN and the infinities. Format 2.0 carries finite
+ * floats only, and a writer is never handed one; the refusal of each
+ * non-finite pattern is pinned by the shared corpus, which both halves run.
  *
  * Any change to the sequence below must be mirrored in {@code interop/interop.cpp},
  * and never changes the wire format.
@@ -167,8 +165,8 @@ public final class Interop
     {
         0x00000000,     // +0
         0x80000000,     // -0
-        0x7F800000,     // +infinity
-        0xFF800000,     // -infinity
+        0xFF7FFFFF,     // the most negative finite float32
+        0x807FFFFF,     // the largest negative subnormal
         0x7F7FFFFF,     // the largest finite float32
         0x00800000,     // the smallest normal
         0x00000001,     // the smallest subnormal
@@ -180,8 +178,8 @@ public final class Interop
     {
         0x0000000000000000L,    // +0
         0x8000000000000000L,    // -0
-        0x7FF0000000000000L,    // +infinity
-        0xFFF0000000000000L,    // -infinity
+        0xFFEFFFFFFFFFFFFFL,    // the most negative finite float64
+        0x800FFFFFFFFFFFFFL,    // the largest negative subnormal
         0x7FEFFFFFFFFFFFFFL,    // the largest finite float64
         0x0010000000000000L,    // the smallest normal
         0x0000000000000001L,    // the smallest subnormal
@@ -224,17 +222,6 @@ public final class Interop
                                             // source file encoding can reach the wire
     };
 
-    private static final int WSTRING_BUFFER_SIZE = 8;
-    private static final String[] WIDE_STRINGS =
-    {
-        "",                                 // empty
-        "\u043C\u0438\u0440",               // basic plane
-        "\uE000",                           // the first code unit above the surrogate block
-        "\uFFFF",                           // the largest code unit there is
-        "A\uD83D\uDE00B",                    // U+1F600 as its surrogate pair: four code units
-        "abcdefg",                          // seven code units, the most buffer size 8 carries
-    };
-
     // -----------------------------------------------------------------------
     // the message
 
@@ -271,7 +258,6 @@ public final class Interop
         final IntRef filler = new IntRef();
         final byte[][] bytes = new byte[BYTES_LENGTH.length][];
         final List<Ref<String>> strings = new ArrayList<>();
-        final List<Ref<String>> wideStrings = new ArrayList<>();
 
         Data()
         {
@@ -294,7 +280,6 @@ public final class Interop
             for ( int i = 0; i < CF_VALUE.length; i++ ) { compressedFloats[i] = new FloatRef(); }
             for ( int i = 0; i < BYTES_LENGTH.length; i++ ) { bytes[i] = new byte[BYTES_LENGTH[i]]; }
             for ( int i = 0; i < STRINGS.length; i++ ) { strings.add( new Ref<>( "" ) ); }
-            for ( int i = 0; i < WIDE_STRINGS.length; i++ ) { wideStrings.add( new Ref<>( "" ) ); }
         }
     }
 
@@ -334,7 +319,6 @@ public final class Interop
         data.filler.value = 5;
         for ( int i = 0; i < BYTES_LENGTH.length; i++ ) { Arrays.fill( data.bytes[i], (byte) BYTES_FILL[i] ); }
         for ( int i = 0; i < STRINGS.length; i++ ) { data.strings.get( i ).value = STRINGS[i]; }
-        for ( int i = 0; i < WIDE_STRINGS.length; i++ ) { data.wideStrings.get( i ).value = WIDE_STRINGS[i]; }
         return data;
     }
 
@@ -401,7 +385,7 @@ public final class Interop
             if ( !stream.serializeIntRelative( RELATIVE_PREVIOUS[i], d.relative[i] ) ) { return false; }
         }
 
-        // ----- float and double, bit transparent at the domain edges
+        // ----- float and double, bit exact at the finite domain edges
         for ( FloatRef ref : d.floats ) { if ( !stream.serializeFloat( ref ) ) { return false; } }
         for ( DoubleRef ref : d.doubles ) { if ( !stream.serializeDouble( ref ) ) { return false; } }
 
@@ -425,13 +409,8 @@ public final class Interop
             if ( !stream.serializeString( ref, STRING_BUFFER_SIZE ) ) { return false; }
         }
 
-        // ----- wstring: empty, basic plane, the code unit boundaries, a pair, full
-        for ( Ref<String> ref : d.wideStrings )
-        {
-            if ( !stream.serializeWideString( ref, WSTRING_BUFFER_SIZE ) ) { return false; }
-        }
-
-        return true;
+        // ----- the end: the message ends here, and so must the stream
+        return stream.serializeEnd();
     }
 
     /**
@@ -521,10 +500,6 @@ public final class Interop
         {
             if ( !STRINGS[i].equals( d.strings.get( i ).value ) ) { problems.add( "string[" + i + "]: got " + d.strings.get( i ).value ); }
         }
-        for ( int i = 0; i < WIDE_STRINGS.length; i++ )
-        {
-            if ( !WIDE_STRINGS[i].equals( d.wideStrings.get( i ).value ) ) { problems.add( "wstring[" + i + "]" ); }
-        }
         return problems;
     }
 
@@ -588,7 +563,8 @@ public final class Interop
 
     /**
      * The hostile half: every proper prefix of a valid stream is a truncated
-     * stream, and a conforming reader refuses every one of them without throwing.
+     * stream, and a conforming reader refuses every one of them without throwing;
+     * the stream with a zero byte more is trailing data, which the end refuses.
      */
     private static void refuse( String path ) throws IOException
     {
@@ -610,7 +586,11 @@ public final class Interop
                 throw new IllegalStateException( "interop java refuse: the " + length + " byte prefix of " + path + " was ACCEPTED" );
             }
         }
-        System.out.println( "interop java: refused all " + input.length + " truncated prefixes of " + path );
+        if ( interopSerialize( new ReadStream( withSlack( Arrays.copyOf( input, input.length + 1 ), input.length + 1 ), input.length + 1 ), new Data() ) )
+        {
+            throw new IllegalStateException( "interop java refuse: " + path + " with a zero byte more was ACCEPTED" );
+        }
+        System.out.println( "interop java: refused all " + input.length + " truncated prefixes of " + path + ", and the stream one byte longer" );
     }
 
     public static void main( String[] args ) throws IOException

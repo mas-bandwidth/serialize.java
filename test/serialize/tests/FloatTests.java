@@ -7,8 +7,9 @@ import static serialize.tests.Harness.checkEqual;
 import static serialize.tests.Harness.test;
 
 /**
- * Bit-transparent float and double, and the compressed float with its pinned
- * conformance vectors — copied mechanically from serialize.h, never re-derived.
+ * Finite float and double, bit exact for every finite pattern, and the
+ * compressed float with its pinned conformance vectors — copied mechanically
+ * from serialize.h, never re-derived.
  */
 final class FloatTests
 {
@@ -16,20 +17,18 @@ final class FloatTests
 
     static void run()
     {
-        test( "float: every bit pattern is legal and round trips exactly", () -> {
+        test( "float: every finite pattern round trips bit exact, -0 and the subnormals included", () -> {
             int[] patterns = {
                 0x00000000,             // +0
                 0x80000000,             // -0
                 0x3F800000,             // 1.0
                 0xBF800000,             // -1.0
-                0x7F800000,             // +Inf
-                0xFF800000,             // -Inf
-                0x7FC00000,             // quiet NaN
-                0x7FC00001,             // quiet NaN with payload
-                0x7F800001,             // signaling NaN
-                0xFFC12345,             // negative NaN with payload
                 0x00000001,             // smallest denormal
                 0x007FFFFF,             // largest denormal
+                0x807FFFFF,             // largest negative denormal
+                0x00800000,             // smallest normal
+                0x7F7FFFFF,             // largest finite
+                0xFF7FFFFF,             // most negative finite
                 0x40490FDA,             // pi
             };
             for ( int pattern : patterns )
@@ -41,24 +40,52 @@ final class FloatTests
 
                 ReadStream reader = new ReadStream( buffer, (int) writer.getBytesProcessed() );
                 FloatRef readBack = new FloatRef();
-                check( reader.serializeFloat( readBack ), "read accepts every pattern" );
+                check( reader.serializeFloat( readBack ), "read accepts every finite pattern" );
                 checkEqual( Float.floatToRawIntBits( readBack.value ) & 0xFFFFFFFFL,
                             pattern & 0xFFFFFFFFL,
                             String.format( "pattern 0x%08X", pattern ) );
             }
         } );
 
-        test( "double: every bit pattern is legal and round trips exactly", () -> {
+        test( "float: NaN and the infinities are refused on read as non_finite_float, destination unwritten", () -> {
+            // written as raw bits, so no float conversion on the way in can quiet
+            // the signaling NaN: the reader must test the bits it read
+            int[] patterns = {
+                0x7F800000,             // +Inf
+                0xFF800000,             // -Inf
+                0x7FC00000,             // quiet NaN
+                0xFFC00000,             // negative quiet NaN
+                0x7F800001,             // signaling NaN
+                0x7FC00001,             // quiet NaN with payload
+                0xFFFFFFFF,             // negative NaN, every payload bit
+                0x7FFFFFFF,             // NaN, every payload bit
+            };
+            for ( int pattern : patterns )
+            {
+                byte[] buffer = new byte[16];
+                WriteStream writer = new WriteStream( buffer, 8 );
+                check( writer.serializeBits( new IntRef( pattern ), 32 ) );
+                writer.flush();
+
+                ReadStream reader = new ReadStream( buffer, 4 );
+                FloatRef readBack = new FloatRef( 1.5f );
+                check( !reader.serializeFloat( readBack ), String.format( "pattern 0x%08X refused", pattern ) );
+                check( reader.getRefusal() == Refusal.NON_FINITE_FLOAT, String.format( "pattern 0x%08X: non_finite_float", pattern ) );
+                checkEqual( Float.floatToRawIntBits( readBack.value ), Float.floatToRawIntBits( 1.5f ), "the destination is unwritten" );
+                check( !reader.serializeBits( new IntRef(), 1 ), "the refusal is terminal" );
+            }
+        } );
+
+        test( "double: every finite pattern round trips bit exact, -0 and the subnormals included", () -> {
             long[] patterns = {
                 0x0000000000000000L,    // +0
                 0x8000000000000000L,    // -0
                 0x3FF0000000000000L,    // 1.0
-                0x7FF0000000000000L,    // +Inf
-                0xFFF0000000000000L,    // -Inf
-                0x7FF8000000000000L,    // quiet NaN
-                0x7FF0000000000001L,    // signaling NaN
-                0xFFF8123456789ABCL,    // negative NaN with payload
                 0x0000000000000001L,    // smallest denormal
+                0x000FFFFFFFFFFFFFL,    // largest denormal
+                0x800FFFFFFFFFFFFFL,    // largest negative denormal
+                0x7FEFFFFFFFFFFFFFL,    // largest finite
+                0xFFEFFFFFFFFFFFFFL,    // most negative finite
                 0x3FD5555555555555L,    // 1/3
             };
             for ( long pattern : patterns )
@@ -70,11 +97,63 @@ final class FloatTests
 
                 ReadStream reader = new ReadStream( buffer, (int) writer.getBytesProcessed() );
                 DoubleRef readBack = new DoubleRef();
-                check( reader.serializeDouble( readBack ), "read accepts every pattern" );
+                check( reader.serializeDouble( readBack ), "read accepts every finite pattern" );
                 checkEqual( Double.doubleToRawLongBits( readBack.value ), pattern,
                             String.format( "pattern 0x%016X", pattern ) );
             }
         } );
+
+        test( "double: NaN and the infinities are refused on read as non_finite_float, destination unwritten", () -> {
+            long[] patterns = {
+                0x7FF0000000000000L,    // +Inf
+                0xFFF0000000000000L,    // -Inf
+                0x7FF8000000000000L,    // quiet NaN
+                0x7FF0000000000001L,    // signaling NaN, the payload in the low group only
+                0xFFF8123456789ABCL,    // negative NaN with payload
+                0xFFFFFFFFFFFFFFFFL,    // negative NaN, every payload bit
+            };
+            for ( long pattern : patterns )
+            {
+                byte[] buffer = new byte[16];
+                WriteStream writer = new WriteStream( buffer, 8 );
+                check( writer.serializeBits64( new LongRef( pattern ), 64 ) );
+                writer.flush();
+
+                ReadStream reader = new ReadStream( buffer, 8 );
+                DoubleRef readBack = new DoubleRef( 1.5 );
+                check( !reader.serializeDouble( readBack ), String.format( "pattern 0x%016X refused", pattern ) );
+                check( reader.getRefusal() == Refusal.NON_FINITE_FLOAT, String.format( "pattern 0x%016X: non_finite_float", pattern ) );
+                checkEqual( Double.doubleToRawLongBits( readBack.value ), Double.doubleToRawLongBits( 1.5 ), "the destination is unwritten" );
+            }
+        } );
+
+        // the write contract is an assert, so it exists only in the checked shape
+        if ( Harness.assertionsEnabled() )
+        {
+            test( "write contract: float and double writers are handed finite values only", () -> {
+                float[] floats = { Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY };
+                for ( float value : floats )
+                {
+                    check( Harness.fires( () -> new WriteStream( new byte[16], 16 ).serializeFloat( new FloatRef( value ) ) ),
+                           "the write stream asserts on " + value );
+                    check( Harness.fires( () -> new MeasureStream().serializeFloat( new FloatRef( value ) ) ),
+                           "the measure stream asserts on " + value );
+                }
+                double[] doubles = { Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY };
+                for ( double value : doubles )
+                {
+                    check( Harness.fires( () -> new WriteStream( new byte[16], 16 ).serializeDouble( new DoubleRef( value ) ) ),
+                           "the write stream asserts on " + value );
+                    check( Harness.fires( () -> new MeasureStream().serializeDouble( new DoubleRef( value ) ) ),
+                           "the measure stream asserts on " + value );
+                }
+                // the negative control: the largest finite values pass
+                check( !Harness.fires( () -> new WriteStream( new byte[16], 16 ).serializeFloat( new FloatRef( Float.MAX_VALUE ) ) ),
+                       "FLT_MAX is finite" );
+                check( !Harness.fires( () -> new WriteStream( new byte[16], 16 ).serializeDouble( new DoubleRef( -Double.MAX_VALUE ) ) ),
+                       "-DBL_MAX is finite" );
+            } );
+        }
 
         test( "float/double: truncated refuses", () -> {
             ReadStream reader = new ReadStream( new byte[16], 3 );
@@ -200,6 +279,7 @@ final class FloatTests
             ReadStream reader = new ReadStream( buffer, (int) writer.getBytesProcessed() );
             FloatRef value = new FloatRef();
             check( !reader.serializeCompressedFloat( value, 0.0f, 10.0f, 0.01f ), "1023 over 1000 steps refused" );
+            check( reader.getRefusal() == Refusal.VALUE_OUT_OF_RANGE, "as value_out_of_range" );
         } );
 
         test( "compressed float: huge delta/res ratios clamp instead of overflowing", () -> {
@@ -213,6 +293,48 @@ final class FloatTests
             check( reader.serializeCompressedFloat( value, 0.0f, 10000000000.0f, 1.0f ) );
             check( Math.abs( value.value - 5000000000.0f ) <= 4096.0f, "within the clamped resolution" );
         } );
+
+        test( "compressed float: a decode that rounds to infinity is refused as non_finite_float", () -> {
+            // [3 * 2^103, FLT_MAX] at resolution 2^104: delta rounds up to
+            // 2^128 - 2^105, and the top integer (2^24 - 2, in 24 bits) decodes
+            // to 2^128, which is +inf. One below the top decodes finite.
+            float min = 3.0f * (float) Math.scalb( 1.0, 103 );
+            float max = Float.MAX_VALUE;
+            float res = (float) Math.scalb( 1.0, 104 );
+            long maxIntegerValue = SerializeUtil.compressedFloatMaxIntegerValue( min, max, res );
+            checkEqual( maxIntegerValue, ( 1L << 24 ) - 2, "the top integer" );
+
+            byte[] top = GoldenWire.bytes( 0xFE, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0 );
+            ReadStream reader = new ReadStream( top, 3 );
+            FloatRef value = new FloatRef( 1.5f );
+            check( !reader.serializeCompressedFloat( value, min, max, res ), "the infinite decode is refused" );
+            check( reader.getRefusal() == Refusal.NON_FINITE_FLOAT, "as non_finite_float" );
+            checkEqual( Float.floatToRawIntBits( value.value ), Float.floatToRawIntBits( 1.5f ), "the destination is unwritten" );
+
+            byte[] below = GoldenWire.bytes( 0xFD, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0 );
+            ReadStream finite = new ReadStream( below, 3 );
+            FloatRef belowValue = new FloatRef();
+            check( finite.serializeCompressedFloat( belowValue, min, max, res ), "one below the top decodes finite" );
+            checkEqual( Float.floatToRawIntBits( belowValue.value ) & 0xFFFFFFFFL, 0x7F7FFFFEL, "and is accepted bit exact" );
+        } );
+
+        // the declaration's top must decode finite: asserted by writers only
+        if ( Harness.assertionsEnabled() )
+        {
+            test( "write contract: a compressed float declaration whose top decodes to infinity asserts", () -> {
+                float min = 3.0f * (float) Math.scalb( 1.0, 103 );
+                float max = Float.MAX_VALUE;
+                float res = (float) Math.scalb( 1.0, 104 );
+                // even for a value that would decode finite: the declaration as a whole is non-conforming
+                check( Harness.fires( () -> new WriteStream( new byte[16], 16 ).serializeCompressedFloat( new FloatRef( min ), min, max, res ) ),
+                       "the write stream asserts" );
+                check( Harness.fires( () -> new MeasureStream().serializeCompressedFloat( new FloatRef( min ), min, max, res ) ),
+                       "the measure stream asserts" );
+                // the negative control: an ordinary declaration passes
+                check( !Harness.fires( () -> new WriteStream( new byte[16], 16 ).serializeCompressedFloat( new FloatRef( 5.0f ), 0.0f, 10.0f, 0.01f ) ),
+                       "an ordinary declaration passes" );
+            } );
+        }
 
         test( "compressed float: truncated refuses", () -> {
             ReadStream reader = new ReadStream( new byte[16], 1 );      // 8 bits available, 10 required

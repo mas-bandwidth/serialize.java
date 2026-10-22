@@ -46,7 +46,8 @@ int packetBytes = (int) writer.getBytesProcessed(); // 5 bytes: 7 + 1 + 32 bits
 // read
 ReadStream reader = new ReadStream( buffer, packetBytes );
 Player decoded = new Player();
-serializePlayer( reader, decoded );                // -> true
+boolean ok = serializePlayer( reader, decoded )    // -> true
+          && reader.serializeEnd();                // the packet ends where its object does
 // decoded.health.value == 87
 
 // measure
@@ -83,22 +84,31 @@ The check model is the family standard's ("Writes assume trusted data"):
 everything, because the wire is a trust boundary.
 
 On the read side, every failure — a truncated read, a value outside its
-range, nonzero alignment padding, a malformed string — returns `false`,
-and hostile bytes never throw.
+range, nonzero alignment padding, a non-finite float, a malformed string,
+bytes after the end — returns `false`, and hostile bytes never throw.
+
+**Every refusal has a reason.** `getRefusal()` names it from the
+standard's closed list, as a `Refusal` whose `toString()` is the family
+spelling: `past_end`, `value_out_of_range`, `nonzero_padding`,
+`trailing_data`, `non_finite_float`, `invalid_utf8`, `embedded_nul`,
+`non_canonical`. The reason is the **first** refusal's: the later
+refusals of a failed stream are its echoes. A stream that has refused
+nothing reports `Refusal.NONE`.
 
 **A failed read is terminal.** Nothing after the failing operation has a
 defined position, so `ReadStream` latches: the first refusal sets the
 failure flag, and every later read on that stream returns `false`
 without consuming a bit or writing a destination — a zero-bit read
-included. `isFailed()` reports the latch; `reset(...)` points the stream
-at data again and clears it, and nothing else does.
+included. `isFailed()` reports the latch and `getRefusal()` its reason;
+`reset(...)` points the stream at data again and clears both, and nothing
+else does.
 
 **A refused read leaves its destination unwritten.** When a read of a
 scalar fails, the holder cell holds exactly what it held before the
 call, so a caller that trusts the cell over the return code cannot
 proceed on a value the stream never carried. Two limits: a read into a
-caller-owned buffer — `serializeBytes`, `serializeString`,
-`serializeWideString` — leaves that buffer's **contents unspecified**
+caller-owned buffer — `serializeBytes`, `serializeString` — leaves that
+buffer's **contents unspecified**
 after a refusal, and a composite read may leave earlier members written,
 because it is a sequence of primitive reads and each one carries the
 rule alone.
@@ -109,13 +119,14 @@ ReadStream r = new ReadStream( data, 1 );          // 8 bits of data
 r.serializeBits( v, 32 );                          // -> false: past the end
 r.serializeBits( v, 8 );                           // -> false: the stream has failed, v untouched
 r.isFailed();                                      // -> true
+r.getRefusal();                                    // -> Refusal.PAST_END, the first reason
 
 r.reset( data, 1 );                                // point at data again, the latch cleared
 r.serializeBits( v, 8 );                           // -> true
 
 // an offset smuggled into the bit headroom of a range is refused
 ReadStream r2 = new ReadStream( hostile, 1 );      // 8 bits carrying 255
-r2.serializeInt( ranged, 0, 200 );                 // -> false: 255 > 200
+r2.serializeInt( ranged, 0, 200 );                 // -> false: 255 > 200, value_out_of_range
 ```
 
 One rule follows from clean refusal: check the result of any serialized
@@ -237,14 +248,17 @@ the serialize surface needs. `Int128Value.fromLong` sign-extends;
 `UInt128Value.fromUnsignedLong` zero-extends; `toUnsigned()` /
 `fromUnsigned` reinterpret bit-transparently.
 
-## Floats and doubles: bit transparent
+## Floats and doubles: finite, bit exact
 
-`serializeFloat` (32 bits) and `serializeDouble` (64 bits) reproduce the
-transmitted pattern exactly — every pattern is legal on the wire: NaNs
-with any payload, signaling NaNs, infinities, negative zero, denormals.
-The library moves patterns with `floatToRawIntBits` /
-`intBitsToFloat`, so nothing is quieted or canonicalized in either
-direction.
+`serializeFloat` (32 bits) and `serializeDouble` (64 bits) carry
+**finite** values, and reproduce every finite pattern exactly — negative
+zero and the subnormals included, nothing flushed or canonicalized. NaN
+with any payload and both infinities are not values the format carries:
+a reader refuses one as `non_finite_float` and leaves the holder cell
+untouched, and a writer handed one is a contract violation (asserted
+under `-ea`). The reader tests the raw bits before any conversion, so no
+float conversion on the way can quiet a signaling NaN into a value that
+looks different.
 
 ```java
 w.serializeFloat( new FloatRef( 3.1415926f ) );
@@ -270,7 +284,12 @@ w.serializeCompressedFloat( new FloatRef( 5.0f ), 0.0f, 10.0f, 0.01f ); // 10 bi
 
 Finite values outside `[min, max]` clamp on write; writing a non-finite
 value is a contract violation (asserted under `-ea`, clamped in
-release); reads refuse integers smuggled above the quantization ceiling.
+release); reads refuse integers smuggled above the quantization ceiling
+as `value_out_of_range`. **The decode must be finite**: at the top of a
+declaration that reaches `Float.MAX_VALUE` the final add can round to
+infinity (`[3 * 2^103, FLT_MAX]` at resolution `2^104` does), so a
+reader refuses a non-finite decode as `non_finite_float`, and a writer
+asserts that its declaration's top decodes finite.
 `SerializeUtil.compressedFloatMaxIntegerValue` exposes the declaration's
 step count for callers pricing a format.
 
@@ -305,31 +324,39 @@ Ref<String> s = new Ref<>();
 r.serializeString( s, 16 );                       // s.value.equals( "golden" )
 ```
 
-Reads validate the payload in every mode: malformed UTF-8 (overlongs,
-surrogate code points, values above U+10FFFF, truncated sequences, stray
-continuations) and interior NULs fail the read. A Java string carrying
-an unpaired surrogate is a writer contract violation (asserted under
-`-ea`): the UTF-8 encoder would replace it, so it cannot reach the wire
-faithfully.
+Reads validate the payload in every mode. A zero byte anywhere in the
+payload is refused as `embedded_nul`, checked over the whole payload
+first; then malformed UTF-8 (overlongs, surrogate code points, values
+above U+10FFFF, truncated sequences, stray continuations, bytes that
+never appear in UTF-8) is refused as `invalid_utf8`. An accepted payload
+is decoded strictly — a `CodingErrorAction.REPORT` decoder, never one
+that substitutes U+FFFD — and real text round trips byte for byte: no
+normalization, no stripped byte order mark, noncharacters and every
+plane kept. A Java string carrying an unpaired surrogate or a NUL is a
+writer contract violation (asserted under `-ea`): the UTF-8 encoder would
+replace the surrogate, so it cannot reach the wire faithfully.
 
-## Wide strings: UTF-16 code units
+## The end of a packet
 
-`serializeWideString(ref, bufferSize)` sends the unit count, then one
-32-bit group per UTF-16 code unit — never a code point — with no
-alignment anywhere: the one place the wide path deliberately differs
-from its narrow counterpart. A Java string *is* a sequence of UTF-16
-code units, so astral characters are two groups on the wire, exactly as
-the family's 2-byte-wchar_t ports split them. `bufferSize` counts wide
-characters.
+`serializeEnd()` closes the object. A writer's end emits nothing and a
+measure's costs nothing; a reader's end requires the stream to end where
+the object does. **A reader of a packet reads the end after the last
+field of the packet's top-level object**, with the stream holding
+exactly the bytes the writer reported — without it, trailing bytes and
+padding go unexamined, and one value would have more than one byte
+sequence.
 
 ```java
-w.serializeWideString( new Ref<>( "😀A" ), 8 );  // 3 code units: 99 bits
+ReadStream r = new ReadStream( packet, packetBytes );
+boolean ok = serializePlayer( r, player ) && r.serializeEnd();
 ```
 
-Unpaired surrogates in a written string are a contract violation
-(asserted under `-ea` — the wide wire cannot carry ill-formed UTF-16,
-because conforming readers refuse it). Reads refuse groups above 0xFFFF,
-interior NUL groups, and unpaired, misordered or dangling surrogates.
+The end refuses a whole byte or more left over as `trailing_data`, even
+a zero byte, and that is checked first; then it reads the final byte's
+unused bits and refuses any set one as `nonzero_padding`. An accepted end
+leaves the stream exactly consumed, so any read after it is past the
+end. On a failed stream the end refuses with the first reason, like any
+other read.
 
 ## The relative integer
 
@@ -339,14 +366,18 @@ sequences — sequence numbers, ack chains. **The domain is `0` to
 `current > previous` always, no wrapping: a caller with a wrapping
 counter unwraps it before serializing. A difference of 1 costs a single
 bit; small differences ride payload tiers of 5/8/13/18/23 bits; past the
-ladder, six zero flags carry `current` itself as 32 raw bits.
+ladder, six zero flags carry `current` itself as 32 raw bits. The writer
+takes the first tier that fits, and that is the only encoding.
 
 The reader reconstructs `current` in a width that cannot wrap, in every
 tier, and refuses the read unless the result lies in the domain and
 strictly exceeds `previous` — the absolute tier's 32 raw bits are
 unsigned, so a value with the top bit set is outside the domain and is
-refused. A refused read is terminal and leaves the holder cell
-untouched.
+refused, as `value_out_of_range`. Then the absolute tier is held to the
+same canonical rule: carrying a `current` no more than 69914 above
+`previous`, a difference a bounded tier would have taken, it is refused
+as `non_canonical`. A refused read is terminal and leaves the holder
+cell untouched.
 
 ```java
 w.serializeIntRelative( 100, new IntRef( 101 ) );  // 1 bit
@@ -477,7 +508,7 @@ in [`conformance/`](conformance) — the family's shared corpus, vendored
 from mas-bandwidth/serialize and checked for drift by CI — and carries
 the family's golden vectors: the golden wire message covering every
 operation class byte for byte, the discriminating float vectors, the
-string and wide-string pins, every relative-integer tier, and the fixed
+string pins, every relative-integer tier, and the fixed
 point shapes at every group count, all minted from the canonical C++
 reference's own output. If your message serializes with
 the same declarations on both ends, a stream written by any family
@@ -485,8 +516,9 @@ implementation reads in any other.
 
 Two doctrines worth knowing at the edges:
 
-- **Trailing bits**: writers zero the unused bits of the final byte;
-  readers never reject a stream for their contents.
+- **Trailing bits**: writers zero the unused bits of the final byte; a
+  field read never looks at them, and a reader's end refuses a set one
+  as `nonzero_padding`, and a whole byte more as `trailing_data`.
 - **Past-end data**: the slack bytes past the end of the data are loaded
   but never interpreted — they cannot influence a decoded value or an
   accept/reject decision.

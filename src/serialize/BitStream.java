@@ -58,13 +58,22 @@ public interface BitStream
     /** One bit: 1 for true, 0 for false. */
     boolean serializeBool( BoolRef value );
 
-    /** The 32 bits of the IEEE-754 representation, bit transparent in both directions. */
+    /**
+     * The 32 bits of the IEEE-754 representation. Finite values only: a
+     * writer is handed finite values (asserted), and a reader refuses NaN and
+     * the infinities as {@link Refusal#NON_FINITE_FLOAT}. Every finite
+     * pattern, -0 and the subnormals included, is bit exact both ways.
+     */
     boolean serializeFloat( FloatRef value );
 
-    /** The 64 bits of the IEEE-754 representation, bit transparent in both directions. */
+    /** The 64 bits of the IEEE-754 representation, low 32-bit group first. Finite values only, as for float. */
     boolean serializeDouble( DoubleRef value );
 
-    /** A float quantized to a resolution: the exact two-rounding float32 arithmetic of STANDARD.md. */
+    /**
+     * A float quantized to a resolution: the exact two-rounding float32
+     * arithmetic of STANDARD.md. A reader refuses a decode that is not finite
+     * as {@link Refusal#NON_FINITE_FLOAT}.
+     */
     boolean serializeCompressedFloat( FloatRef value, float min, float max, float resolution );
 
     /** Aligns first, then {@code bytes} raw bytes. The count is not written: both sides must agree on it. */
@@ -76,12 +85,6 @@ public interface BitStream
     /** A UTF-8 string: the byte length as a ranged int over [0, bufferSize-1], then the bytes (which aligns). */
     boolean serializeString( Ref<String> value, int bufferSize );
 
-    /**
-     * A wide string: the UTF-16 code unit count as a ranged int over
-     * [0, bufferSize-1], then each code unit as a 32-bit group. No alignment
-     * anywhere in this operation.
-     */
-    boolean serializeWideString( Ref<String> value, int bufferSize );
 
     /**
      * The strictly increasing relative-integer ladder over the domain 0 to
@@ -114,6 +117,16 @@ public interface BitStream
      * object on a failed stream refuses without invoking the object.
      */
     boolean serializeObject( Serializer object );
+
+    /**
+     * The end of the object. A writer's end emits nothing and a measure's
+     * costs nothing. A reader's end refuses a whole byte or more after the
+     * object as {@link Refusal#TRAILING_DATA}, then a set bit in the final
+     * byte's unused bits as {@link Refusal#NONZERO_PADDING}, and consumes
+     * that padding. A reader of a packet calls it after the last field of the
+     * packet's top-level object.
+     */
+    boolean serializeEnd();
 
     /** The number of pad bits an align would cost right now. Always 7 on a measure stream. */
     int getAlignBits();

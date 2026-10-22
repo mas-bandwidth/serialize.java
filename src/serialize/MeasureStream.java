@@ -136,6 +136,7 @@ public final class MeasureStream implements BitStream
     @Override
     public boolean serializeFloat( FloatRef value )
     {
+        assert SerializeUtil.floatBitsAreFinite( Float.floatToRawIntBits( value.value ) );
         bitsWritten += 32;
         return true;
     }
@@ -143,6 +144,7 @@ public final class MeasureStream implements BitStream
     @Override
     public boolean serializeDouble( DoubleRef value )
     {
+        assert SerializeUtil.doubleBitsAreFinite( Double.doubleToRawLongBits( value.value ) );
         bitsWritten += 64;
         return true;
     }
@@ -154,6 +156,8 @@ public final class MeasureStream implements BitStream
         // guard a non-conforming declaration or value on every writing stream
         long maxIntegerValue = SerializeUtil.compressedFloatMaxIntegerValue( min, max, resolution );
         assert value.value - value.value == 0.0f;
+        assert SerializeUtil.floatBitsAreFinite( Float.floatToRawIntBits(
+            SerializeUtil.compressedFloatReadValue( (int) maxIntegerValue, maxIntegerValue, max - min, min ) ) );
         bitsWritten += SerializeUtil.bitsRequired( 0, (int) maxIntegerValue );
         return true;
     }
@@ -196,20 +200,6 @@ public final class MeasureStream implements BitStream
         bitsWritten += SerializeUtil.bitsRequired( 0, bufferSize - 1 );
         serializeAlign();
         bitsWritten += (long) length * 8;
-        return true;
-    }
-
-    @Override
-    public boolean serializeWideString( Ref<String> value, int bufferSize )
-    {
-        String string = value.value;
-        assert string != null;
-        assert SerializeUtil.isValidUtf16( string );
-        assert SerializeUtil.hasNoInteriorNul( string );
-        int length = string.length();
-        assert length < bufferSize;
-        bitsWritten += SerializeUtil.bitsRequired( 0, bufferSize - 1 );
-        bitsWritten += (long) length * 32;          // no alignment anywhere in this operation
         return true;
     }
 
@@ -288,6 +278,13 @@ public final class MeasureStream implements BitStream
     public boolean serializeObject( Serializer object )
     {
         return object.serialize( this );
+    }
+
+    /** Costs nothing: the unused bits of the final byte are inside the byte rounding every caller applies. */
+    @Override
+    public boolean serializeEnd()
+    {
+        return true;
     }
 
     /** Always the worst case of 7: the measure does not know the final bit position. */

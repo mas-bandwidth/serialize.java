@@ -13,9 +13,9 @@ CLASSES         := build/classes
 TEST_CLASSES    := build/test-classes
 INTEROP_CLASSES := build/interop-classes
 
-.PHONY: all test test-release conformance interop clean
+.PHONY: all test test-release conformance controls interop clean
 
-all: test test-release
+all: test test-release controls
 
 # library: Java 17 language level, built and run on the pinned JDK 21
 $(CLASSES)/.stamp: $(SRC)
@@ -44,6 +44,13 @@ test-release: $(TEST_CLASSES)/.stamp
 # runs it too, as one suite among many.
 conformance: $(TEST_CLASSES)/.stamp
 	$(JAVA) -ea -cp $(CLASSES):$(TEST_CLASSES) serialize.tests.ConformanceTests
+
+# the negative controls: a corpus file whose operation has no runner must go
+# red, and a reader with one refusal rule deleted, built from a scratch copy of
+# the library, must fail EXACTLY the vectors conformance-controls/<rule>.expected
+# names. Controls.java holds the sabotages; the lists are the reference's.
+controls: $(TEST_CLASSES)/.stamp
+	$(JAVA) -cp $(CLASSES):$(TEST_CLASSES) serialize.tests.Controls $(CLASSES) $(TEST_CLASSES) build/controls
 
 # the interop harness: compiled against the library classes only, like the tests.
 # One exchange with the C++ reference per invocation:

@@ -39,6 +39,7 @@ public final class AllTests
         FixedTests.run();
         IntRelativeTests.run();
         StringTests.run();
+        EndTests.run();
         MeasureTests.run();
         GoldenWireTests.run();
         ConformanceTests.run();
