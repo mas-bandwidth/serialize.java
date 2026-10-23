@@ -91,7 +91,40 @@ public final class ConformanceTests
 {
     private ConformanceTests() {}
 
-    private static final Path CORPUS = Paths.get( "conformance" );
+    /**
+     * The environment variable that points this runner at another corpus,
+     * such as mas-bandwidth/serialize main HEAD in the nightly conformance
+     * functional test. Unset or empty, the vendored {@code conformance/} runs.
+     */
+    static final String CORPUS_DIR_VARIABLE = "SERIALIZE_CONFORMANCE_DIR";
+
+    /** The same for {@code conformance-controls/}, which {@link Controls} reads. */
+    static final String CONTROLS_DIR_VARIABLE = "SERIALIZE_CONFORMANCE_CONTROLS_DIR";
+
+    private static final Path CORPUS = corpusDir();
+
+    /**
+     * Resolves a corpus directory: the override when it is set and non-empty,
+     * otherwise the vendored directory. A set override is taken as written and
+     * never falls back, so a nightly pointed at a missing directory fails on
+     * the empty corpus rather than quietly running the vendored copy.
+     */
+    static Path resolveDir( String override, String vendored )
+    {
+        return override == null || override.isEmpty() ? Paths.get( vendored ) : Paths.get( override );
+    }
+
+    /** The conformance corpus this run reads. */
+    static Path corpusDir()
+    {
+        return resolveDir( System.getenv( CORPUS_DIR_VARIABLE ), "conformance" );
+    }
+
+    /** The negative controls' directory this run reads. */
+    static Path controlsDir()
+    {
+        return resolveDir( System.getenv( CONTROLS_DIR_VARIABLE ), "conformance-controls" );
+    }
 
     /** Non-zero, so a read that strays past the end of the data is visible. */
     private static final byte SLACK_FILL = (byte) 0xA5;

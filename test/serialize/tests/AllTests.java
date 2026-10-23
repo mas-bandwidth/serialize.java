@@ -42,6 +42,7 @@ public final class AllTests
         EndTests.run();
         MeasureTests.run();
         GoldenWireTests.run();
+        ConformanceDirTests.run();
         ConformanceTests.run();
 
         System.exit( Harness.finish() );
