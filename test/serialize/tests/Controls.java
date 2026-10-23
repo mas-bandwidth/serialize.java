@@ -48,7 +48,9 @@ import javax.tools.ToolProvider;
  * cleanly.
  *
  * Usage: {@code java serialize.tests.Controls <library classes> <test classes> <scratch dir>},
- * from the repository root.
+ * from the repository root. The corpus and the lists are the vendored
+ * directories unless SERIALIZE_CONFORMANCE_DIR and
+ * SERIALIZE_CONFORMANCE_CONTROLS_DIR name others ({@link ConformanceTests#resolveDir}).
  */
 public final class Controls
 {
@@ -211,7 +213,7 @@ public final class Controls
 
         System.out.println( "control unknown-operation: a vector whose operation has no runner must go red" );
         boolean red = runConformance( libraryClasses, testClasses,
-                                      List.of( Paths.get( "conformance-controls", "unknown-operation.txt" ) ), null );
+                                      List.of( ConformanceTests.controlsDir().resolve( "unknown-operation.txt" ) ), null );
         if ( !red )
         {
             failures.add( "unknown-operation: the runner went green over an operation it cannot drive" );
@@ -221,7 +223,7 @@ public final class Controls
         for ( Control control : CONTROLS )
         {
             System.out.printf( "%ncontrol %s: %s%n", control.name, control.rule );
-            Path expected = Paths.get( "conformance-controls", control.name + ".expected" );
+            Path expected = ConformanceTests.controlsDir().resolve( control.name + ".expected" );
             if ( !Files.isRegularFile( expected ) )
             {
                 failures.add( control.name + ": no " + expected + " naming the vectors its rule owns" );
@@ -263,7 +265,7 @@ public final class Controls
     private static List<Path> corpusFiles() throws IOException
     {
         List<Path> files = new ArrayList<>();
-        try ( DirectoryStream<Path> entries = Files.newDirectoryStream( Paths.get( "conformance" ), "*.txt" ) )
+        try ( DirectoryStream<Path> entries = Files.newDirectoryStream( ConformanceTests.corpusDir(), "*.txt" ) )
         {
             for ( Path entry : entries )
             {
