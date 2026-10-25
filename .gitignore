@@ -1,3 +1,5 @@
 dist/
 build/
 *.class
+corpus/
+fuzz-artifacts/

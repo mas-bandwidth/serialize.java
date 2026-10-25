@@ -151,10 +151,12 @@ language level (`javac --release 17`), built and tested on the pinned
 JDK 21. A plain Makefile drives everything — no Maven, no Gradle:
 
 ```
-make          # all three below
+make               # the first three below
 make test          # the suite with assertions on, the checked shape
 make test-release  # the same suite with assertions off, the release shape
 make controls      # the negative controls: sabotaged readers must fail exactly their rule's vectors
+make fuzz          # the coverage guided fuzz targets, FUZZ_TIME seconds each (default 60)
+make fuzz-control  # the fuzzer's negative control: a planted asymmetry must be caught
 ```
 
 ## Testing
@@ -196,6 +198,28 @@ that one rule deleted — a string replacement in a scratch copy of the
 library, compiled and loaded on its own — must fail exactly the vectors
 [`conformance-controls/`](conformance-controls)`<rule>.expected` names,
 the same lists the reference holds its own sabotaged readers to.
+
+`make fuzz` is the functional tier's fuzzer, the counterpart of the
+reference's libFuzzer harness, on [Jazzer](https://github.com/CodeIntelligenceTesting/jazzer)
+(pinned in [tending/PINS.md](tending/PINS.md), fetched and sha256 checked
+by the Makefile). [`fuzz/`](fuzz) holds two coverage guided targets, run
+with assertions on. `make fuzz-read` is the hostile read: an op program
+from the input drives arbitrary bytes through every `ReadStream`
+primitive, and it traps on a throw, an accepted value outside its
+contract, or a refusal that breaks the refusal contract (no reason, a
+reason outside the closed list, a written destination, a stream that
+does not stay failed); the same bytes are read twice, from an exact array
+and from one with set bits past the end, and the two must agree.
+`make fuzz-roundtrip` is the differential round trip: values generated
+from the input are written, measured and read back by one serialize body,
+and it traps on any asymmetry, a measure that under-measures, a read that
+does not end where the writer stopped, and a trailing byte not refused as
+`trailing_data`. `make fuzz-control` is its negative control: the round
+trip, from an empty corpus, against a scratch copy of the library with
+one asymmetry planted, must trap on it within the 60 second smoke budget.
+CI runs the control and a 60 second smoke of each target on every push;
+`.github/workflows/nightly-fuzz.yml` runs each for an hour nightly with a
+cumulative corpus, and uploads crash reproducers on failure.
 
 [`interop/`](interop) takes it further: the CI `interop` job builds the
 C++ reference at a pinned release and runs it head to head with this
