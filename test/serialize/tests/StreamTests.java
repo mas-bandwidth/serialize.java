@@ -335,6 +335,72 @@ final class StreamTests
             checkTerminal( "an int_relative read past the domain", failed( reader -> {
                 check( !reader.serializeIntRelative( Integer.MAX_VALUE, new IntRef() ), "past the domain refused" );
             }, relative, 1 ) );
+
+            // failure from a serializeObject callback returning false without a
+            // primitive refusal: the stream latches and refusal remains NONE
+            byte[] readable = new byte[16];
+            readable[0] = (byte) 0xAB;
+            readable[1] = (byte) 0xCD;
+            ReadStream callbackFailed = failed( reader -> {
+                IntRef leading = new IntRef();
+                check( reader.serializeBits( leading, 4 ), "leading bits land before the object" );
+                checkEqual( leading.value, 0x0B, "leading bits value" );
+                check( !reader.serializeObject( s -> false ), "callback returning false is refused" );
+            }, readable, 2 );
+            check( callbackFailed.getRefusal() == Refusal.NONE,
+                   "callback-only refusal names no wire rule" );
+            checkEqual( callbackFailed.getBitsProcessed(), 4L,
+                        "callback-only refusal leaves cursor at the four bits consumed" );
+            checkTerminal( "a serializeObject callback returning false", callbackFailed );
+
+            // failure inside a serializeObject where a primitive refuses and the
+            // callback swallows the failure and returns true: the stream stays
+            // latched and serializeObject returns false with the primitive's reason
+            byte[] swallowBuf = new byte[16];
+            swallowBuf[0] = (byte) 0xFF;
+            ReadStream swallowed = failed( reader -> {
+                check( !reader.serializeObject( s -> {
+                    IntRef inner = new IntRef( SENTINEL );
+                    check( !s.serializeInt( inner, 0, 200 ), "inner range refusal" );
+                    checkEqual( inner.value, SENTINEL, "inner destination untouched" );
+                    return true;
+                } ), "serializeObject refuses even if callback returns true after inner failure" );
+            }, swallowBuf, 2 );
+            check( swallowed.getRefusal() == Refusal.VALUE_OUT_OF_RANGE,
+                   "first primitive refusal reason is preserved when callback returns true" );
+            checkTerminal( "an inner primitive refusal swallowed by callback", swallowed );
+        } );
+
+        test( "object: exact-end empty object succeeds on a healthy stream, and reset clears an object latch", () -> {
+            byte[] buffer = new byte[9];
+            buffer[0] = (byte) 0xA5;
+            ReadStream exactEnd = new ReadStream( buffer, 1 );
+            IntRef fullByte = new IntRef();
+            check( exactEnd.serializeBits( fullByte, 8 ), "read the single byte" );
+            checkEqual( fullByte.value, 0xA5, "single byte value" );
+            BoolRef invoked = new BoolRef( false );
+            check( exactEnd.serializeObject( s -> {
+                invoked.value = true;
+                return true;
+            } ), "empty object at exact end of a healthy stream succeeds" );
+            check( invoked.value, "healthy empty object at exact end invoked callback" );
+            check( !exactEnd.isFailed(), "exact-end empty object leaves stream healthy" );
+            check( exactEnd.getRefusal() == Refusal.NONE, "exact-end empty object leaves refusal NONE" );
+            check( exactEnd.serializeEnd(), "serializeEnd succeeds at exact end after empty object" );
+
+            // reset after a callback-only object refusal clears the latch and reads again
+            ReadStream reader = new ReadStream( buffer, 1 );
+            check( !reader.serializeObject( s -> false ), "callback refusal latches the stream" );
+            check( reader.isFailed(), "the latch is set by callback refusal" );
+            check( reader.getRefusal() == Refusal.NONE, "refusal stays NONE on callback refusal" );
+
+            reader.reset( buffer, 1 );
+            check( !reader.isFailed(), "reset cleared the callback latch" );
+            check( reader.getRefusal() == Refusal.NONE, "refusal is NONE after reset" );
+            IntRef afterReset = new IntRef();
+            check( reader.serializeObject( s -> s.serializeBits( afterReset, 8 ) ),
+                   "serializeObject succeeds after reset" );
+            checkEqual( afterReset.value, 0xA5, "the byte decoded after reset" );
         } );
 
         test( "terminality: reset clears the latch", () -> {
@@ -415,6 +481,14 @@ final class StreamTests
     {
         check( reader.isFailed(), what + ": the latch is set" );
         long consumed = reader.getBitsProcessed();
+        Refusal reason = reader.getRefusal();
+
+        BoolRef objectCalled = new BoolRef( false );
+        check( !reader.serializeObject( s -> {
+            objectCalled.value = true;
+            return true;
+        } ), what + ": an empty object read fails on a failed stream" );
+        check( !objectCalled.value, what + ": the object callback is not invoked on a failed stream" );
 
         IntRef destination = new IntRef( SENTINEL );
         check( !reader.serializeBits( destination, 1 ), what + ": a one-bit read fails" );
@@ -423,10 +497,18 @@ final class StreamTests
         check( !reader.serializeInt( destination, 7, 7 ), what + ": a zero-bit read fails" );
         checkEqual( destination.value, SENTINEL, what + ": the zero-bit read wrote nothing" );
 
+        LongRef fixedDest = new LongRef( SENTINEL );
+        check( !reader.serializeFixed( fixedDest, 16, 16, 7, 7 ), what + ": a zero-bit fixed read fails" );
+        checkEqual( fixedDest.value, (long) SENTINEL, what + ": the zero-bit fixed read wrote nothing" );
+
         BoolRef flag = new BoolRef( true );
         check( !reader.serializeBool( flag ), what + ": a bool read fails" );
         check( flag.value, what + ": the bool read wrote nothing" );
 
+        check( !reader.serializeAlign(), what + ": an align fails" );
+        check( !reader.serializeEnd(), what + ": serializeEnd fails" );
+
+        check( reader.getRefusal() == reason, what + ": the refusal reason is preserved across terminal reads" );
         checkEqual( reader.getBitsProcessed(), consumed, what + ": no bits were consumed after the failure" );
     }
 }
