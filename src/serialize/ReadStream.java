@@ -743,7 +743,15 @@ public final class ReadStream implements BitStream
     public boolean serializeObject( Serializer object )
     {
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
-        return object.serialize( this );
+        if ( !object.serialize( this ) || failed )
+        {
+            // the object's own serialize refused: the stream is terminal from here,
+            // and if the refusal was the caller's own (no primitive read refused),
+            // refusal stays NONE so no wire rule is named for it
+            failed = true;
+            return false;
+        }
+        return true;
     }
 
     /**
