@@ -191,6 +191,13 @@ public final class Controls
                 + "        value.value = unsignedValue + min;",
                   "        value.value = (long) (double) ( unsignedValue + min ); // NEGATIVE CONTROL: the value goes through a double on purpose" ) ),
 
+        // PROBE ONLY (not for merge): the object latch, entry and exit deleted
+        new Control( "object-terminal", "a nested object on a failed stream refuses before its callback runs",
+            read( "        if ( failed ) return false;         // the latch: a failed stream refuses everything after\n"
+                + "        if ( !object.serialize( this ) || failed )",
+                  "        if ( failed && object == null ) return false;" + DELETED + "\n"
+                + "        if ( !object.serialize( this ) )" ) ),
+
         // the refusal reason: this reader refuses every stream the real one
         // refuses, and names the wrong rule for one of them
         new Control( "wrong-reason", "a refusal names the rule that refused it",
