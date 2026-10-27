@@ -19,9 +19,9 @@ final class EndTests
         test( "refusal reasons: the closed list, spelled as STANDARD.md spells it", () -> {
             String[] spellings = {
                 "past_end", "value_out_of_range", "nonzero_padding", "trailing_data",
-                "non_finite_float", "invalid_utf8", "embedded_nul", "non_canonical",
+                "non_finite_float", "invalid_utf8", "embedded_nul", "non_canonical", "rejected",
             };
-            checkEqual( Refusal.values().length, spellings.length + 1, "eight reasons and none" );
+            checkEqual( Refusal.values().length, spellings.length + 1, "nine reasons and none" );
             for ( String spelling : spellings )
             {
                 Refusal refusal = Refusal.fromSpelling( spelling );

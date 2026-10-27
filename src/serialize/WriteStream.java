@@ -448,6 +448,14 @@ public final class WriteStream implements BitStream
         return object.serialize( this );
     }
 
+    /** Reject is read only: on a write stream it is caller error, asserted in the checked build. */
+    @Override
+    public boolean reject()
+    {
+        assert false : "reject is read only";
+        return false;
+    }
+
     /** Emits nothing: the object ends at the bit index after its last field, and flush zero fills the final byte. */
     @Override
     public boolean serializeEnd()

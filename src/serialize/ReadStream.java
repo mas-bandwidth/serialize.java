@@ -743,15 +743,25 @@ public final class ReadStream implements BitStream
     public boolean serializeObject( Serializer object )
     {
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
-        if ( !object.serialize( this ) || failed )
+        if ( !object.serialize( this ) )
         {
-            // the object's own serialize refused: the stream is terminal from here,
-            // and if the refusal was the caller's own (no primitive read refused),
-            // refusal stays NONE so no wire rule is named for it
-            failed = true;
-            return false;
+            // the object's own serialize refused: the caller's refusal, latched as
+            // rejected unless a read inside it already refused (the first reason wins)
+            return fail( Refusal.REJECTED );
         }
-        return true;
+        // a callback that swallowed an inner refusal and returned true still refuses
+        return !failed;
+    }
+
+    /**
+     * STANDARD.md, "Refusal reasons": the caller refuses a value whose bytes
+     * were well formed. Latches {@link Refusal#REJECTED} unless the stream
+     * already refused, in which case the first reason stands. Always false.
+     */
+    @Override
+    public boolean reject()
+    {
+        return fail( Refusal.REJECTED );
     }
 
     /**
