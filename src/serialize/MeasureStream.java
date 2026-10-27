@@ -280,6 +280,14 @@ public final class MeasureStream implements BitStream
         return object.serialize( this );
     }
 
+    /** Reject is read only: on a measure stream it is caller error, asserted in the checked build. */
+    @Override
+    public boolean reject()
+    {
+        assert false : "reject is read only";
+        return false;
+    }
+
     /** Costs nothing: the unused bits of the final byte are inside the byte rounding every caller applies. */
     @Override
     public boolean serializeEnd()

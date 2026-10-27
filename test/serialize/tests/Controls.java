@@ -196,6 +196,21 @@ public final class Controls
         new Control( "wrong-reason", "a refusal names the rule that refused it",
             read( "                return fail( Refusal.EMBEDDED_NUL );",
                   "                return fail( Refusal.INVALID_UTF8 ); // NEGATIVE CONTROL: the wrong reason on purpose" ) ),
+
+        // a nested object whose serialize function fails with nothing latched
+        // refuses without latching anything: no reason, and not terminal
+        new Control( "object-latch-rejected", "a nested object that refuses on its own latches rejected",
+            read( "            return fail( Refusal.REJECTED );",
+                  "            return failed && fail( Refusal.REJECTED );" + DELETED ) ),
+
+        // the caller's reject entry point returns false and latches nothing
+        new Control( "reject-reason", "reject refuses as rejected",
+            read( "    public boolean reject()\n"
+                + "    {\n"
+                + "        return fail( Refusal.REJECTED );",
+                  "    public boolean reject()\n"
+                + "    {\n"
+                + "        return failed && fail( Refusal.REJECTED );" + DELETED ) ),
     };
 
     public static void main( String[] args ) throws Exception

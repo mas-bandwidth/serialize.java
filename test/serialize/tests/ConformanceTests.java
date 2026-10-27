@@ -427,7 +427,8 @@ public final class ConformanceTests
         STRING,
         FIXED,
         END,
-        OBJECT                              // opens a nested object over the steps that follow
+        OBJECT,                             // opens a nested object over the steps that follow
+        REJECT                              // the caller refusing: reject() at the top level, a false return inside an object
     }
 
     private static boolean valueIsABitPattern( Kind kind )
@@ -581,6 +582,11 @@ public final class ConformanceTests
             case END:
                 return stream.serializeEnd();
 
+            // the top level reject: the caller refuses through the library's entry
+            // point. Inside an object runSteps handles it as the callback's false.
+            case REJECT:
+                return stream.reject();
+
             case OBJECT:
             default:
                 // nesting is driven by runSteps, which owns the step range an object
@@ -610,9 +616,17 @@ public final class ConformanceTests
      * Runs a range of steps against a stream. A step spelled {@code object <n>}
      * wraps the next n steps in a nested object, driven through the library's own
      * {@code serializeObject} so what the vectors exercise is the composition the
-     * operation performs.
+     * operation performs. A {@code reject} step inside an object is the object's
+     * serialize function returning false there without refusing on its own, which
+     * the object must latch as rejected; at the top level it is {@code reject()}.
      */
     private static boolean runSteps( BitStream stream, List<Step> steps, int from, int count, Walk walk )
+    {
+        return runSteps( stream, steps, from, count, walk, false );
+    }
+
+    private static boolean runSteps( BitStream stream, List<Step> steps, int from, int count, Walk walk,
+                                     boolean inObject )
     {
         int end = from + count;
         int i = from;
@@ -627,7 +641,7 @@ public final class ConformanceTests
                 final boolean[] called = new boolean[1];
                 if ( !stream.serializeObject( inner -> {
                     called[0] = true;
-                    return runSteps( inner, steps, nested, nestedCount, walk );
+                    return runSteps( inner, steps, nested, nestedCount, walk, true );
                 } ) )
                 {
                     check( !alreadyFailed || !called[0],
@@ -638,6 +652,11 @@ public final class ConformanceTests
                     }
                     return false;
                 }
+            }
+            else if ( step.kind == Kind.REJECT && inObject )
+            {
+                // the callback fails here on its own, refusing nothing itself
+                return false;
             }
             else if ( !runStep( stream, step ) )
             {
@@ -711,6 +730,7 @@ public final class ConformanceTests
             case ALIGN:
             case END:
             case OBJECT:
+            case REJECT:
             default:
                 // none has a value of its own; for align and end the corpus states
                 // the padding consumed, which a conforming read always finds zero
@@ -963,6 +983,11 @@ public final class ConformanceTests
                 case "end":
                     check( words.length == 1, "malformed step: " + text );
                     step.kind = Kind.END;
+                    return step;
+                case "reject":
+                    check( words.length == 1, "malformed step: " + text );
+                    check( refused, "a reject step appears only in refused vectors: " + name );
+                    step.kind = Kind.REJECT;
                     return step;
                 case "int":
                 case "int64":
@@ -1300,9 +1325,9 @@ public final class ConformanceTests
                 {
                     fail( "serializeObject callback refusal did not latch the stream" );
                 }
-                if ( callbackRefused.getRefusal() != Refusal.NONE )
+                if ( callbackRefused.getRefusal() != Refusal.REJECTED )
                 {
-                    fail( "serializeObject callback-only refusal set a wire refusal reason" );
+                    fail( "serializeObject callback-only refusal did not latch rejected" );
                 }
                 IntRef probe = new IntRef( 0xFFFFFFFF );
                 if ( callbackRefused.serializeInt( probe, 7, 7 ) || probe.value != 0xFFFFFFFF )

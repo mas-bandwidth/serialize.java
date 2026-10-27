@@ -337,7 +337,7 @@ final class StreamTests
             }, relative, 1 ) );
 
             // failure from a serializeObject callback returning false without a
-            // primitive refusal: the stream latches and refusal remains NONE
+            // primitive refusal: the stream latches rejected (STANDARD.md 2.1)
             byte[] readable = new byte[16];
             readable[0] = (byte) 0xAB;
             readable[1] = (byte) 0xCD;
@@ -347,8 +347,8 @@ final class StreamTests
                 checkEqual( leading.value, 0x0B, "leading bits value" );
                 check( !reader.serializeObject( s -> false ), "callback returning false is refused" );
             }, readable, 2 );
-            check( callbackFailed.getRefusal() == Refusal.NONE,
-                   "callback-only refusal names no wire rule" );
+            check( callbackFailed.getRefusal() == Refusal.REJECTED,
+                   "callback-only refusal latches rejected" );
             checkEqual( callbackFailed.getBitsProcessed(), 4L,
                         "callback-only refusal leaves cursor at the four bits consumed" );
             checkTerminal( "a serializeObject callback returning false", callbackFailed );
@@ -392,7 +392,7 @@ final class StreamTests
             ReadStream reader = new ReadStream( buffer, 1 );
             check( !reader.serializeObject( s -> false ), "callback refusal latches the stream" );
             check( reader.isFailed(), "the latch is set by callback refusal" );
-            check( reader.getRefusal() == Refusal.NONE, "refusal stays NONE on callback refusal" );
+            check( reader.getRefusal() == Refusal.REJECTED, "callback refusal latches rejected" );
 
             reader.reset( buffer, 1 );
             check( !reader.isFailed(), "reset cleared the callback latch" );
@@ -401,6 +401,76 @@ final class StreamTests
             check( reader.serializeObject( s -> s.serializeBits( afterReset, 8 ) ),
                    "serializeObject succeeds after reset" );
             checkEqual( afterReset.value, 0xA5, "the byte decoded after reset" );
+        } );
+
+        // STANDARD.md "Refusal reasons", IMPLEMENTING.md U2: the caller's refusal
+        test( "reject: the caller's refusal latches rejected, terminal, first reason wins", () -> {
+            byte[] buffer = new byte[16];
+            buffer[0] = 0x05;
+            buffer[1] = (byte) 0xAB;
+
+            // top level: four well formed bits, then the caller refuses them
+            ReadStream topLevel = failed( reader -> {
+                IntRef value = new IntRef();
+                check( reader.serializeBits( value, 4 ), "the four bits are well formed" );
+                checkEqual( value.value, 5, "the four bits decode" );
+                check( !reader.reject(), "reject returns false" );
+            }, buffer, 2 );
+            check( topLevel.getRefusal() == Refusal.REJECTED, "reject latches rejected" );
+            checkEqual( topLevel.getBitsProcessed(), 4L, "reject consumes nothing" );
+            checkTerminal( "a top level reject", topLevel );
+
+            // first reason wins: a wire refusal, then the caller rejects the echo
+            ReadStream wireFirst = failed( reader -> {
+                check( !reader.serializeBits( new IntRef(), 32 ), "32 bits from one byte refused" );
+                check( !reader.reject(), "reject on the failed stream returns false" );
+            }, buffer, 1 );
+            check( wireFirst.getRefusal() == Refusal.PAST_END, "reject keeps the wire reason" );
+
+            // an object whose callback rejects through the entry point
+            ReadStream viaEntry = failed( reader -> {
+                check( !reader.serializeObject( s -> {
+                    check( s.serializeBits( new IntRef(), 4 ), "the nested bits land" );
+                    return s.reject();
+                } ), "an object whose callback rejects refuses" );
+            }, buffer, 2 );
+            check( viaEntry.getRefusal() == Refusal.REJECTED, "the object latches rejected" );
+            checkTerminal( "an object rejecting through reject()", viaEntry );
+
+            // an object whose callback returns false after an inner wire refusal
+            ReadStream innerFirst = failed( reader -> {
+                check( !reader.serializeObject( s -> {
+                    check( !s.serializeBits( new IntRef(), 16 ), "16 bits from one byte refused" );
+                    return false;
+                } ), "the object refuses" );
+            }, buffer, 1 );
+            check( innerFirst.getRefusal() == Refusal.PAST_END, "the object keeps the inner reason" );
+
+            // the negative case: an object whose callback does not reject is accepted
+            ReadStream accepted = new ReadStream( buffer, 2 );
+            check( accepted.serializeObject( s -> s.serializeBits( new IntRef(), 4 ) ), "the object is accepted" );
+            check( !accepted.isFailed() && accepted.getRefusal() == Refusal.NONE, "nothing refused" );
+
+            // reset clears a rejection like any other refusal
+            topLevel.reset( buffer, 2 );
+            check( !topLevel.isFailed() && topLevel.getRefusal() == Refusal.NONE, "reset clears rejected" );
+        } );
+
+        // Reject is read only: caller error on a write or a measure, asserted in
+        // the checked shape, and a plain false in the release shape
+        test( "reject: read only, asserted on a write or a measure stream", () -> {
+            WriteStream writer = new WriteStream( new byte[16], 16 );
+            MeasureStream measure = new MeasureStream();
+            if ( assertionsEnabled() )
+            {
+                check( fires( writer::reject ), "reject on a write stream asserts" );
+                check( fires( measure::reject ), "reject on a measure stream asserts" );
+            }
+            else
+            {
+                check( !writer.reject(), "reject on a write stream returns false" );
+                check( !measure.reject(), "reject on a measure stream returns false" );
+            }
         } );
 
         test( "terminality: reset clears the latch", () -> {
@@ -507,6 +577,7 @@ final class StreamTests
 
         check( !reader.serializeAlign(), what + ": an align fails" );
         check( !reader.serializeEnd(), what + ": serializeEnd fails" );
+        check( !reader.reject(), what + ": a reject on a failed stream returns false" );
 
         check( reader.getRefusal() == reason, what + ": the refusal reason is preserved across terminal reads" );
         checkEqual( reader.getBitsProcessed(), consumed, what + ": no bits were consumed after the failure" );

@@ -9,7 +9,8 @@ package serialize;
  * A {@link ReadStream} latches the FIRST refusal and keeps reporting it:
  * every later read on the failed stream fails too, but the reason is the
  * cause, not the echo. {@link #NONE} is the state of a stream that has
- * refused nothing, and is not one of the eight reasons.
+ * refused nothing, and is not one of the nine reasons: a refused stream
+ * always reports one of them, never NONE.
  */
 public enum Refusal
 {
@@ -46,7 +47,14 @@ public enum Refusal
      * An encoding a conforming writer never produces for the value it
      * carries: the int_relative absolute tier carrying a bounded difference.
      */
-    NON_CANONICAL( "non_canonical" );
+    NON_CANONICAL( "non_canonical" ),
+
+    /**
+     * The bytes were well formed, and the reader's caller refused the value
+     * they carry: {@link ReadStream#reject}, or a nested object whose
+     * serialize function returned false with nothing refused inside it.
+     */
+    REJECTED( "rejected" );
 
     private final String spelling;
 

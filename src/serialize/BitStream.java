@@ -114,9 +114,22 @@ public interface BitStream
      * inserted around it, so the nested object's operations appear at exactly
      * this position in the stream. A refusal inside the nesting propagates out
      * of it, and a read stream consults its failure state first, so a nested
-     * object on a failed stream refuses without invoking the object.
+     * object on a failed stream refuses without invoking the object. On a
+     * read stream, an object whose serialize function returns false with
+     * nothing refused inside it latches {@link Refusal#REJECTED}; when a read
+     * inside it refused first, that first reason is kept.
      */
     boolean serializeObject( Serializer object );
+
+    /**
+     * The caller's own refusal of a value whose bytes were well formed. On a
+     * read stream it latches {@link Refusal#REJECTED} through the same latch
+     * as every wire refusal, so it is terminal and the first reason wins, and
+     * it returns false so a serialize function can {@code return
+     * stream.reject();}. Reject is read only: on a write or a measure stream
+     * it is caller error, asserted in the checked build, and returns false.
+     */
+    boolean reject();
 
     /**
      * The end of the object. A writer's end emits nothing and a measure's

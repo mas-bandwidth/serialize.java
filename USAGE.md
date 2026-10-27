@@ -91,9 +91,18 @@ bytes after the end — returns `false`, and hostile bytes never throw.
 standard's closed list, as a `Refusal` whose `toString()` is the family
 spelling: `past_end`, `value_out_of_range`, `nonzero_padding`,
 `trailing_data`, `non_finite_float`, `invalid_utf8`, `embedded_nul`,
-`non_canonical`. The reason is the **first** refusal's: the later
+`non_canonical`, `rejected`. The reason is the **first** refusal's: the later
 refusals of a failed stream are its echoes. A stream that has refused
-nothing reports `Refusal.NONE`.
+nothing reports `Refusal.NONE`, and a refused stream never does.
+
+**The caller can refuse too.** `rejected` is the caller's own refusal of
+a value whose bytes were well formed: `stream.reject()` latches it on a
+read stream and returns `false`, so a serialize function can
+`return stream.reject();`. A nested object whose serialize function
+returns `false` with nothing refused inside it latches `rejected` as
+well; if a read inside it refused first, that reason stands. Reject is
+read only: on a write or measure stream it is caller error, asserted in
+the checked build.
 
 **A failed read is terminal.** Nothing after the failing operation has a
 defined position, so `ReadStream` latches: the first refusal sets the
