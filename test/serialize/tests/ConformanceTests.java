@@ -623,8 +623,15 @@ public final class ConformanceTests
             {
                 final int nested = i + 1;
                 final int nestedCount = step.width;
-                if ( !stream.serializeObject( inner -> runSteps( inner, steps, nested, nestedCount, walk ) ) )
+                final boolean alreadyFailed = ( stream instanceof ReadStream ) && ( (ReadStream) stream ).isFailed();
+                final boolean[] called = new boolean[1];
+                if ( !stream.serializeObject( inner -> {
+                    called[0] = true;
+                    return runSteps( inner, steps, nested, nestedCount, walk );
+                } ) )
                 {
+                    check( !alreadyFailed || !called[0],
+                           "serializeObject invoked its callback on an already-failed ReadStream" );
                     if ( walk.stoppedAt < 0 )
                     {
                         walk.stoppedAt = i;
@@ -1253,6 +1260,19 @@ public final class ConformanceTests
         {
             IntRef after = new IntRef( 0xFFFFFFFF );
             long bitsBefore = stream.getBitsProcessed();
+            Refusal reasonBefore = stream.getRefusal();
+            boolean[] objectCalled = new boolean[1];
+            if ( stream.serializeObject( s -> {
+                objectCalled[0] = true;
+                return true;
+            } ) )
+            {
+                fail( "the stream accepted an object read after the refusal: failure is not terminal" );
+            }
+            if ( objectCalled[0] )
+            {
+                fail( "the object read after the refusal invoked its callback" );
+            }
             if ( stream.serializeBits( after, 8 ) )
             {
                 fail( "the stream accepted a read after the refusal: failure is not terminal" );
@@ -1264,6 +1284,44 @@ public final class ConformanceTests
             if ( stream.getBitsProcessed() != bitsBefore )
             {
                 fail( "the read after the refusal consumed bits" );
+            }
+            if ( stream.getRefusal() != reasonBefore )
+            {
+                fail( "the read after the refusal overwrote the refusal reason" );
+            }
+            if ( file.equals( "object.txt" ) )
+            {
+                ReadStream callbackRefused = new ReadStream( readerBuffer(), bytes.length );
+                if ( callbackRefused.serializeObject( s -> false ) )
+                {
+                    fail( "serializeObject accepted a callback returning false" );
+                }
+                if ( !callbackRefused.isFailed() )
+                {
+                    fail( "serializeObject callback refusal did not latch the stream" );
+                }
+                if ( callbackRefused.getRefusal() != Refusal.NONE )
+                {
+                    fail( "serializeObject callback-only refusal set a wire refusal reason" );
+                }
+                IntRef probe = new IntRef( 0xFFFFFFFF );
+                if ( callbackRefused.serializeInt( probe, 7, 7 ) || probe.value != 0xFFFFFFFF )
+                {
+                    fail( "zero-bit read succeeded after serializeObject callback refusal" );
+                }
+
+                ReadStream swallowed = new ReadStream( readerBuffer(), bytes.length );
+                if ( swallowed.serializeObject( s -> {
+                    runSteps( s, buildSteps(), 0, buildSteps().size(), new Walk() );
+                    return true;
+                } ) )
+                {
+                    fail( "serializeObject accepted a callback that returned true after an inner refusal" );
+                }
+                if ( !swallowed.isFailed() || swallowed.getRefusal() != reasonBefore )
+                {
+                    fail( "serializeObject did not preserve the inner refusal when the callback returned true" );
+                }
             }
         }
 
