@@ -1,0 +1,59 @@
+name: Nightly Fuzz
+
+on:
+  schedule:
+    - cron: '0 8 * * *'   # every day at 08:00 UTC
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Fuzz duration in seconds, per target'
+        default: '3600'
+        required: false
+
+jobs:
+  fuzz:
+    name: fuzz (Jazzer, extended)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      FUZZ_TIME: ${{ github.event.inputs.duration || '3600' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # the corpus is cached across runs so fuzzing is cumulative: each night
+      # starts from the most recent corpus and saves the evolved one
+      - name: Restore corpus
+        uses: actions/cache/restore@v4
+        with:
+          path: corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-
+
+      # the two targets of the per-push smoke (the fuzz job in ci.yml), each
+      # for the full duration, from and into the cached corpus
+      - name: Fuzz hostile read
+        run: make fuzz-read JDK_HOME="$JAVA_HOME" FUZZ_TIME="$FUZZ_TIME"
+
+      - name: Fuzz round trip
+        if: success() || failure()
+        run: make fuzz-roundtrip JDK_HOME="$JAVA_HOME" FUZZ_TIME="$FUZZ_TIME"
+
+      - name: Save corpus
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: corpus
+          key: fuzz-corpus-${{ github.run_id }}
+
+      - name: Upload crash reproducers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: fuzz-artifacts
+          if-no-files-found: ignore

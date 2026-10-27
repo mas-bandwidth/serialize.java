@@ -22,6 +22,42 @@ jobs:
       # conformance-controls/<rule>.expected names
       - run: make controls JDK_HOME="$JAVA_HOME"
 
+  # The coverage guided fuzz smoke, the reference's libFuzzer job in Java:
+  # Jazzer (pinned, sha256 checked by the Makefile) drives the two targets in
+  # fuzz/, 60 s each, assertions on. The hostile read pushes arbitrary bytes
+  # through every ReadStream primitive and traps on a throw, an out of contract
+  # value, or a refusal that breaks the refusal contract; the round trip traps
+  # on any write/read asymmetry and on a measure that under-measures. The
+  # negative control runs first: the round trip target against a library with
+  # one asymmetry planted (fuzz/serialize/fuzz/Sabotage.java), from an empty
+  # corpus, must trap on it within the same 60 s budget, so a green smoke is a
+  # fuzzer seen to go red. .github/workflows/nightly-fuzz.yml runs the long
+  # version with a cumulative corpus.
+  fuzz:
+    name: fuzz (Jazzer)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Negative control (a planted asymmetry must be caught within 60 s)
+        run: make fuzz-control JDK_HOME="$JAVA_HOME" FUZZ_TIME=60
+      - name: Fuzz hostile read
+        run: make fuzz-read JDK_HOME="$JAVA_HOME" FUZZ_TIME=60
+      - name: Fuzz round trip
+        run: make fuzz-roundtrip JDK_HOME="$JAVA_HOME" FUZZ_TIME=60
+      - name: Upload crash reproducers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: |
+            fuzz-artifacts
+            build/fuzz-control
+          if-no-files-found: ignore
+
   spec-sync:
     name: STANDARD.md and the corpus match upstream
     runs-on: ubuntu-latest
