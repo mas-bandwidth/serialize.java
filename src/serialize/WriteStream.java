@@ -253,25 +253,47 @@ public final class WriteStream implements BitStream
     @Override
     public boolean serializeCompressedFloat( FloatRef value, float min, float max, float resolution )
     {
+        // derive the wire constants, then the one home of the quantization:
+        // the unified and precomputed forms are wire identical by construction
         long maxIntegerValue = SerializeUtil.compressedFloatMaxIntegerValue( min, max, resolution );
-        int bits = SerializeUtil.bitsRequired( 0, (int) maxIntegerValue );
-        float delta = max - min;
+        return serializeCompressedFloatPrecomputed( value, maxIntegerValue,
+                                                    SerializeUtil.bitsRequired( 0, (int) maxIntegerValue ), max - min, min );
+    }
+
+    @Override
+    public boolean serializeCompressedFloatPrecomputed( FloatRef value, long maxIntegerValue, int bits, float delta, float min )
+    {
+        // U16: the constants must be what the params derive, asserted like every write contract
+        assert SerializeUtil.compressedFloatConstantsAreConsistent( maxIntegerValue, bits, delta );
         // the declaration's top must decode finite (STANDARD.md, "compressed_float"):
         // [3 * 2^103, FLT_MAX] passes every check on delta and still rounds its
         // top to +inf, so a writer handed max would emit a code every reader
         // refuses. Asserted on the write path only: a reader with such a
         // declaration refuses the non-finite decode at runtime instead
-        assert SerializeUtil.floatBitsAreFinite( Float.floatToRawIntBits(
-            SerializeUtil.compressedFloatReadValue( (int) maxIntegerValue, maxIntegerValue, delta, min ) ) );
+        assert SerializeUtil.floatBitsAreFinite( Float.floatToRawIntBits( delta + min ) );
         int code = SerializeUtil.compressedFloatWriteCode( value.value, min, delta, maxIntegerValue );
         writer.writeBits( code, bits );
         return true;
     }
 
-    private static boolean checkBytes( byte[] data, int bytes )
+    private boolean checkBytes( byte[] data, int bytes )
     {
         assert data != null;
         assert bytes >= 0;
+        assert bytes <= data.length;
+        // U10: the room for the whole operation, align and payload, before any bit
+        assert writer.getBitsAvailable() >= writer.getAlignBits() + (long) bytes * 8;
+        return true;
+    }
+
+    // U10: the room a string needs, length field, align and payload, from here
+    private boolean checkStringRoom( int bufferSize, int length )
+    {
+        assert bufferSize >= 1;
+        assert length < bufferSize;
+        long lengthBits = SerializeUtil.bitsRequired( 0, bufferSize - 1 );
+        long alignBits = ( 8 - ( writer.getBitsWritten() + lengthBits ) % 8 ) % 8;
+        assert writer.getBitsAvailable() >= lengthBits + alignBits + (long) length * 8;
         return true;
     }
 
@@ -303,7 +325,7 @@ public final class WriteStream implements BitStream
         assert SerializeUtil.hasNoInteriorNul( string );
         byte[] utf8 = string.getBytes( StandardCharsets.UTF_8 );
         int length = utf8.length;
-        assert length < bufferSize;
+        assert checkStringRoom( bufferSize, length );
         writeInt( length, 0, bufferSize - 1 );
         serializeAlign();
         writer.writeBytes( utf8, length );
@@ -456,6 +478,16 @@ public final class WriteStream implements BitStream
         return false;
     }
 
+    /**
+     * There is nothing to refuse on a write: records nothing, never asserts,
+     * and returns false (IMPLEMENTING.md U9, U14).
+     */
+    @Override
+    public boolean fail( Refusal reason )
+    {
+        return false;
+    }
+
     /** Emits nothing: the object ends at the bit index after its last field, and flush zero fills the final byte. */
     @Override
     public boolean serializeEnd()
@@ -469,7 +501,11 @@ public final class WriteStream implements BitStream
         return writer.getAlignBits();
     }
 
-    /** Flush the last scratch word to memory. Call after the final operation, before reading the data. */
+    /**
+     * Flush the last scratch word to memory. Required: the buffer's contents
+     * are unspecified until it is called (IMPLEMENTING.md U11), so call it
+     * after the final operation and before reading, sending or copying the data.
+     */
     public void flush()
     {
         writer.flushBits();

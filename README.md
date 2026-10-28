@@ -132,7 +132,7 @@ static boolean serializePlayer( BitStream stream, Player player )
 byte[] buffer = new byte[64];                        // length a multiple of 8
 WriteStream writer = new WriteStream( buffer, buffer.length );
 serializePlayer( writer, player );                   // -> true
-writer.flush();                                      // always flush before touching the bytes
+writer.flush();                                      // required: the buffer is unspecified until flush
 int packetBytes = (int) writer.getBytesProcessed();  // 5 bytes: 7 + 1 + 32 bits
 
 ReadStream reader = new ReadStream( buffer, packetBytes );

@@ -256,6 +256,54 @@ public final class SerializeUtil
      * The integer clamp after the floor is normative (STANDARD.md, schema#109).
      * Returns the wire code as an unsigned 32-bit value in an int.
      */
+    /**
+     * Is this a conforming compressed float declaration, the one
+     * {@link #compressedFloatMaxIntegerValue} accepts without asserting?
+     * {@code min < max}, {@code res > 0}, and both {@code delta = max - min}
+     * and {@code delta / res} finite in float32 (NaN fails every comparison).
+     * IMPLEMENTING.md U16: a reader refuses a declaration that fails this as
+     * value_out_of_range; a writer and a measure assert it.
+     */
+    public static boolean compressedFloatDeclarationIsValid( float min, float max, float res )
+    {
+        if ( !( min < max && res > 0.0f ) )
+        {
+            return false;
+        }
+        float delta = max - min;
+        float values = delta / res;
+        return delta - delta == 0.0f && values - values == 0.0f;
+    }
+
+    /**
+     * The compressed float wire constants of a conforming declaration, the
+     * port of the reference's {@code serialize_compressed_float_params}: the
+     * derivation {@link BitStream#serializeCompressedFloat} performs on every
+     * call, exposed so it can be paid once and handed to
+     * {@link BitStream#serializeCompressedFloatPrecomputed}. The two entry
+     * points are wire identical by construction. A non-conforming declaration
+     * asserts in the checked build, like the writer.
+     */
+    public static CompressedFloatParams compressedFloatParams( float min, float max, float res )
+    {
+        long maxIntegerValue = compressedFloatMaxIntegerValue( min, max, res );
+        return new CompressedFloatParams( maxIntegerValue, bitsRequired( 0, (int) maxIntegerValue ), max - min );
+    }
+
+    /**
+     * Could these constants be what {@link #compressedFloatParams} derives?
+     * IMPLEMENTING.md U16, the checks that need no declaration:
+     * {@code maxIntegerValue} in [1, 4294967040], {@code bits} equal to
+     * {@code bitsRequired( 0, maxIntegerValue )}, and {@code delta} positive
+     * and finite.
+     */
+    public static boolean compressedFloatConstantsAreConsistent( long maxIntegerValue, int bits, float delta )
+    {
+        return maxIntegerValue >= 1 && maxIntegerValue <= 4294967040L
+            && bits == bitsRequired( 0, (int) maxIntegerValue )
+            && delta > 0.0f && delta - delta == 0.0f;
+    }
+
     static int compressedFloatWriteCode( float value, float min, float delta, long maxIntegerValue )
     {
         // writing a non-finite value (NaN, +/-Inf) is non-conforming — assert in
@@ -311,6 +359,39 @@ public final class SerializeUtil
         reaches the wire: for the same bounds, signed and unsigned storage
         produce identical bytes. Debug-assert material only.
     */
+
+    /**
+     * Is this a conforming fixed point declaration? IMPLEMENTING.md U16:
+     * {@code integerBits >= 1}, {@code fractionBits >= 0}, a storage width of
+     * 8, 16, 32 or 64 (or exactly 128 for the wide form), {@code min <= max},
+     * and bounds that fit the Q format. A reader refuses a declaration that
+     * fails this as value_out_of_range; a writer and a measure assert it.
+     */
+    static boolean fixedDeclarationIsValid( int integerBits, int fractionBits, boolean wide, long minUnits, long maxUnits )
+    {
+        if ( integerBits < 1 || fractionBits < 0 || minUnits > maxUnits )
+        {
+            return false;
+        }
+        long width = (long) integerBits + fractionBits;
+        if ( wide ? width != 128 : ( width != 8 && width != 16 && width != 32 && width != 64 ) )
+        {
+            return false;
+        }
+        return fixedBoundsFit( integerBits, minUnits, maxUnits );
+    }
+
+    /**
+     * The family spelling of a refusal reason, IMPLEMENTING.md U14's
+     * refusal-name function: {@code "none"} for no refusal ({@code null} or
+     * {@link Refusal#NONE}), and otherwise exactly as STANDARD.md and the
+     * corpus spell it. {@link Refusal#toString} returns the same spellings;
+     * {@code Enum.name()} returns the Java constant names and is not it.
+     */
+    public static String refusalName( Refusal reason )
+    {
+        return reason == null ? "none" : reason.toString();
+    }
 
     static boolean fixedBoundsFit( int integerBits, long minUnits, long maxUnits )
     {

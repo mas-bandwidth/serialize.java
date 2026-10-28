@@ -13,7 +13,7 @@ CLASSES         := build/classes
 TEST_CLASSES    := build/test-classes
 INTEROP_CLASSES := build/interop-classes
 
-.PHONY: all test test-release conformance controls interop clean fuzz fuzz-read fuzz-roundtrip fuzz-control
+.PHONY: all test test-release conformance controls interop clean fuzz fuzz-read fuzz-roundtrip fuzz-control fuzz-read-control
 
 all: test test-release controls
 
@@ -75,6 +75,7 @@ interop: $(INTEROP_CLASSES)/.stamp
 #   make fuzz                 # both targets, FUZZ_TIME seconds each (default 60)
 #   make fuzz-read FUZZ_TIME=3600
 #   make fuzz-roundtrip SABOTAGE=1   # against the sabotaged library (see fuzz-control)
+#   make fuzz-read FUZZ_DA=1         # the release shape: assertions off
 JAZZER_VERSION := 0.30.0
 ifeq ($(shell uname -s),Darwin)
 JAZZER_ASSET  := jazzer-macos.tar.gz
@@ -94,6 +95,8 @@ FUZZ_SRC         := $(wildcard fuzz/serialize/fuzz/*.java)
 FUZZ_CLASSES     := build/fuzz-classes
 SABOTAGE_SRC     := build/fuzz-sabotage-src
 SABOTAGE_CLASSES := build/fuzz-sabotage-classes
+READ_SABOTAGE_SRC     := build/fuzz-read-sabotage-src
+READ_SABOTAGE_CLASSES := build/fuzz-read-sabotage-classes
 
 FUZZ_TIME      ?= 60
 FUZZ_CORPUS    ?= corpus
@@ -102,8 +105,11 @@ FUZZ_LIBRARY   := $(if $(SABOTAGE),$(SABOTAGE_CLASSES),$(CLASSES))
 
 # assertions on, as the reference builds its fuzzer in Debug: the write side
 # contracts are asserts, and the round trip's generated values must keep them.
+# FUZZ_DA=1 runs with assertions off, the release shape: the hostile read must
+# hold there too, because every read refusal is a check, never an assert.
 # Only this repository's classes are instrumented for coverage.
-JAZZER = $(JAVA) -ea:serialize... -cp $(JAZZER_JAR):$(1) com.code_intelligence.jazzer.Jazzer --cp=$(1) --instrumentation_includes='serialize.**'
+FUZZ_ASSERTS = $(if $(FUZZ_DA),-da,-ea:serialize...)
+JAZZER = $(JAVA) $(FUZZ_ASSERTS) -cp $(JAZZER_JAR):$(1) com.code_intelligence.jazzer.Jazzer --cp=$(1) --instrumentation_includes='serialize.**'
 FUZZ_FLAGS = -max_total_time=$(FUZZ_TIME) -timeout=10 -print_final_stats=1
 
 # the download is verified before anything is unpacked from it
@@ -124,6 +130,14 @@ $(SABOTAGE_CLASSES)/.stamp: $(SRC) $(FUZZ_CLASSES)/.stamp
 	rm -rf $(SABOTAGE_SRC) $(SABOTAGE_CLASSES)
 	$(JAVA) -cp $(FUZZ_CLASSES) serialize.fuzz.Sabotage src/serialize $(SABOTAGE_SRC)
 	$(JAVAC) --release 17 -Xlint:all -Werror -d $(SABOTAGE_CLASSES) $(SABOTAGE_SRC)/*.java
+	@touch $@
+
+# the read-sabotaged library: one planted READ defect (Sabotage read mode),
+# for the hostile read target's negative control
+$(READ_SABOTAGE_CLASSES)/.stamp: $(SRC) $(FUZZ_CLASSES)/.stamp
+	rm -rf $(READ_SABOTAGE_SRC) $(READ_SABOTAGE_CLASSES)
+	$(JAVA) -cp $(FUZZ_CLASSES) serialize.fuzz.Sabotage src/serialize $(READ_SABOTAGE_SRC) read
+	$(JAVAC) --release 17 -Xlint:all -Werror -d $(READ_SABOTAGE_CLASSES) $(READ_SABOTAGE_SRC)/*.java
 	@touch $@
 
 FUZZ_DEPS := $(JAZZER_JAR) $(FUZZ_CLASSES)/.stamp $(if $(SABOTAGE),$(SABOTAGE_CLASSES)/.stamp)
@@ -164,6 +178,35 @@ fuzz-control: $(JAZZER_JAR) $(FUZZ_CLASSES)/.stamp $(SABOTAGE_CLASSES)/.stamp
 	fi; \
 	grep -E '^#[0-9]+' build/fuzz-control/log | tail -n 1; \
 	echo "fuzz-control: green: the planted asymmetry was caught in $${elapsed} s (budget $(FUZZ_TIME) s)"
+
+# the hostile read's NEGATIVE CONTROL: the hostile read target, from an EMPTY
+# corpus, against a library whose ranged int read accepts the offset one past
+# its span, within the smoke budget, assertions off (the release shape the
+# planted defect would ship in). Green only when the fuzzer traps on the
+# planted defect rather than on anything else: an int decoded outside its
+# range, or a string length (read as a ranged int) one past its buffer, the
+# two places the off-by-one surfaces. Anything else fails the control; a
+# hostile read that runs out the clock against a broken reader measures
+# nothing.
+fuzz-read-control: $(JAZZER_JAR) $(FUZZ_CLASSES)/.stamp $(READ_SABOTAGE_CLASSES)/.stamp
+	rm -rf build/fuzz-read-control
+	mkdir -p build/fuzz-read-control/corpus build/fuzz-read-control/artifacts
+	@start=$$(date +%s); \
+	if $(JAVA) -da -cp $(JAZZER_JAR):$(READ_SABOTAGE_CLASSES):$(FUZZ_CLASSES) com.code_intelligence.jazzer.Jazzer \
+		--cp=$(READ_SABOTAGE_CLASSES):$(FUZZ_CLASSES) --instrumentation_includes='serialize.**' \
+		--target_class=serialize.fuzz.HostileReadFuzzer \
+		--reproducer_path=build/fuzz-read-control/artifacts -artifact_prefix=build/fuzz-read-control/artifacts/ \
+		$(FUZZ_FLAGS) build/fuzz-read-control/corpus > build/fuzz-read-control/log 2>&1; then \
+		tail -n 20 build/fuzz-read-control/log; \
+		echo "fuzz-read-control: RED: the planted read defect survived $(FUZZ_TIME) s of fuzzing"; exit 1; \
+	fi; \
+	elapsed=$$(( $$(date +%s) - start )); \
+	if ! grep -E 'serialize\.fuzz\.FuzzCheck: (int: value outside|string: longer than its buffer)' build/fuzz-read-control/log; then \
+		tail -n 40 build/fuzz-read-control/log; \
+		echo "fuzz-read-control: RED: the fuzzer stopped, but not on the planted read defect"; exit 1; \
+	fi; \
+	grep -E '^#[0-9]+' build/fuzz-read-control/log | tail -n 1; \
+	echo "fuzz-read-control: green: the planted read defect was caught in $${elapsed} s (budget $(FUZZ_TIME) s)"
 
 clean:
 	rm -rf build

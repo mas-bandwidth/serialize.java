@@ -41,6 +41,7 @@ public final class AllTests
         StringTests.run();
         EndTests.run();
         MeasureTests.run();
+        UniformRulesTests.run();
         GoldenWireTests.run();
         ConformanceDirTests.run();
         ConformanceTests.run();

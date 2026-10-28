@@ -54,25 +54,41 @@ public final class ReadStream implements BitStream
     /**
      * @param buffer the buffer to read from. Any array size works; at least
      *        8 bytes of slack past {@code bytes} is fastest. See {@link BitReader}.
-     * @param bytes the number of bytes of packet data to read.
+     * @param bytes the number of bytes of packet data to read. A null array,
+     *        or a count that is negative or past the array, is the caller's
+     *        misuse: the stream refuses it as value_out_of_range here, and
+     *        every read refuses after it (IMPLEMENTING.md U7).
      */
     public ReadStream( byte[] buffer, int bytes )
     {
-        reader = new BitReader( buffer, bytes );
+        reader = new BitReader( EMPTY, 0 );
+        reset( buffer, bytes );
     }
+
+    private static final byte[] EMPTY = new byte[0];
 
     /**
      * Rewinds the stream over the given buffer, the allocation-free reuse
      * surface: same contract as the constructor.
      * @param buffer the buffer to read from. Any array size works; at least
      *        8 bytes of slack past {@code bytes} is fastest. See {@link BitReader}.
-     * @param bytes the number of bytes of packet data to read.
+     * @param bytes the number of bytes of packet data to read. Misuse is
+     *        refused as for the constructor.
      */
     public void reset( byte[] buffer, int bytes )
     {
-        reader.reset( buffer, bytes );
         failed = false;
         refusal = Refusal.NONE;
+        // IMPLEMENTING.md U7: a byte count outside the array is the caller's
+        // misuse on read, refused as value_out_of_range at initialization
+        // rather than thrown, and every read on the stream refuses after it
+        if ( buffer == null || bytes < 0 || bytes > buffer.length )
+        {
+            reader.reset( EMPTY, 0 );
+            fail( Refusal.VALUE_OUT_OF_RANGE );
+            return;
+        }
+        reader.reset( buffer, bytes );
     }
 
     @Override public boolean isWriting() { return false; }
@@ -95,15 +111,21 @@ public final class ReadStream implements BitStream
         return refusal;
     }
 
-    // Sets the latch and reports the refusal in one expression, so a refusal
-    // reads as `return fail( reason );` wherever it occurs. The FIRST reason
-    // is kept: a refusal on a stream that has already failed is an echo.
-    private boolean fail( Refusal reason )
+    /**
+     * Fails the stream with a reason, through the same latch every refusal
+     * takes, so a refusal reads as {@code return stream.fail( reason );}. The
+     * FIRST reason is kept: a refusal on a stream that has already failed is
+     * an echo. IMPLEMENTING.md U14: {@code null} or {@link Refusal#NONE}
+     * records {@link Refusal#REJECTED}, never none, because a refused stream
+     * that reported none would be relabelled by the next read. Always false.
+     */
+    @Override
+    public boolean fail( Refusal reason )
     {
         if ( !failed )
         {
             failed = true;
-            refusal = reason;
+            refusal = ( reason == null || reason == Refusal.NONE ) ? Refusal.REJECTED : reason;
         }
         return false;
     }
@@ -113,25 +135,19 @@ public final class ReadStream implements BitStream
     // bytecode is carried even when -ea is absent, and it counts against
     // inlining thresholds
 
-    private static boolean checkBits32( int bits )
-    {
-        assert bits > 0;
-        assert bits <= 32;
-        return true;
-    }
-
-    private static boolean checkBits64( int bits )
-    {
-        assert bits > 0;
-        assert bits <= 64;
-        return true;
-    }
+    // IMPLEMENTING.md U7 and U16: a caller declaration that cannot be right
+    // (a bit count outside its range, min above max) refuses as
+    // value_out_of_range before any bits move, in every build. A bit count
+    // in [1,n] is one unsigned compare: bits - 1 below n.
 
     @Override
     public boolean serializeBits( IntRef value, int bits )
     {
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
-        assert checkBits32( bits );
+        if ( Integer.compareUnsigned( bits - 1, 32 ) >= 0 )
+        {
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
+        }
         if ( reader.wouldReadPastEnd( bits ) )
         {
             return fail( Refusal.PAST_END );
@@ -144,7 +160,10 @@ public final class ReadStream implements BitStream
     public boolean serializeBits64( LongRef value, int bits )
     {
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
-        assert checkBits64( bits );
+        if ( Integer.compareUnsigned( bits - 1, 64 ) >= 0 )
+        {
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
+        }
         if ( bits <= 32 )
         {
             if ( reader.wouldReadPastEnd( bits ) )
@@ -176,7 +195,10 @@ public final class ReadStream implements BitStream
     public boolean serializeInt( IntRef value, int min, int max )
     {
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
-        assert min <= max;
+        if ( min > max )
+        {
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
+        }
         int bits = SerializeUtil.bitsRequired( min, max );
         if ( bits == 0 )
         {
@@ -201,7 +223,10 @@ public final class ReadStream implements BitStream
     public boolean serializeInt64( LongRef value, long min, long max )
     {
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
-        assert min <= max;
+        if ( min > max )
+        {
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
+        }
         int bits = SerializeUtil.bitsRequired64( min, max );
         if ( bits == 0 )
         {
@@ -237,7 +262,10 @@ public final class ReadStream implements BitStream
     public boolean serializeInt128( Ref<Int128Value> value, Int128Value min, Int128Value max )
     {
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
-        assert min.compareTo( max ) <= 0;
+        if ( min.compareTo( max ) > 0 )
+        {
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
+        }
         UInt128Value unsignedMin = min.toUnsigned();
         UInt128Value unsignedMax = max.toUnsigned();
         int bits = SerializeUtil.bitsRequired128( unsignedMin, unsignedMax );
@@ -401,9 +429,26 @@ public final class ReadStream implements BitStream
     public boolean serializeCompressedFloat( FloatRef value, float min, float max, float resolution )
     {
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
+        // U16: a declaration the params derivation would assert on is the
+        // caller's misuse, refused before any bits move
+        if ( !SerializeUtil.compressedFloatDeclarationIsValid( min, max, resolution ) )
+        {
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
+        }
         long maxIntegerValue = SerializeUtil.compressedFloatMaxIntegerValue( min, max, resolution );
-        int bits = SerializeUtil.bitsRequired( 0, (int) maxIntegerValue );
-        float delta = max - min;
+        return serializeCompressedFloatPrecomputed( value, maxIntegerValue,
+                                                    SerializeUtil.bitsRequired( 0, (int) maxIntegerValue ), max - min, min );
+    }
+
+    @Override
+    public boolean serializeCompressedFloatPrecomputed( FloatRef value, long maxIntegerValue, int bits, float delta, float min )
+    {
+        if ( failed ) return false;         // the latch: a failed stream refuses everything after
+        // U16: constants that cannot be what the params derive refuse, before any bits move
+        if ( !SerializeUtil.compressedFloatConstantsAreConsistent( maxIntegerValue, bits, delta ) )
+        {
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
+        }
         if ( reader.wouldReadPastEnd( bits ) )
         {
             return fail( Refusal.PAST_END );
@@ -431,7 +476,9 @@ public final class ReadStream implements BitStream
     public boolean serializeBytes( byte[] data, int bytes )
     {
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
-        if ( bytes < 0 )
+        // U7 and U16: a negative count, or a destination without the capacity
+        // for it, is the caller's misuse, refused before any bits move
+        if ( data == null || bytes < 0 || bytes > data.length )
         {
             return fail( Refusal.VALUE_OUT_OF_RANGE );
         }
@@ -470,6 +517,13 @@ public final class ReadStream implements BitStream
     public boolean serializeString( Ref<String> value, int bufferSize )
     {
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
+        // U7: a buffer below 1 has no room for even the empty string's
+        // terminator, and a length range of [0, bufferSize - 1] below zero
+        // would let the wire choose a negative length. Refused before any bits move
+        if ( bufferSize < 1 )
+        {
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
+        }
         // the length, over [0, bufferSize-1]
         IntRef length = new IntRef();
         if ( !serializeInt( length, 0, bufferSize - 1 ) )
@@ -530,7 +584,12 @@ public final class ReadStream implements BitStream
     public boolean serializeIntRelative( int previous, IntRef current )
     {
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
-        assert previous >= 0;               // the domain: previous is caller state, never off the wire
+        // the domain: previous is caller state, never off the wire. Outside it
+        // is the caller's misuse, refused before any bits move (U16)
+        if ( previous < 0 )
+        {
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
+        }
 
         // the one-bit tier
         if ( reader.wouldReadPastEnd( 1 ) )
@@ -613,12 +672,11 @@ public final class ReadStream implements BitStream
     public boolean serializeFixed( LongRef value, int integerBits, int fractionBits, long minUnits, long maxUnits )
     {
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
-        assert integerBits >= 1;
-        assert fractionBits >= 0;
-        int width = integerBits + fractionBits;
-        assert width == 8 || width == 16 || width == 32 || width == 64;
-        assert minUnits <= maxUnits;
-        assert SerializeUtil.fixedBoundsFit( integerBits, minUnits, maxUnits );
+        // U16: a fixed point declaration that does not fit its Q format refuses
+        if ( !SerializeUtil.fixedDeclarationIsValid( integerBits, fractionBits, false, minUnits, maxUnits ) )
+        {
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
+        }
 
         long rawMin = minUnits << fractionBits;
         long rawMax = maxUnits << fractionBits;
@@ -671,11 +729,11 @@ public final class ReadStream implements BitStream
     public boolean serializeFixed128( Ref<Int128Value> value, int integerBits, int fractionBits, long minUnits, long maxUnits )
     {
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
-        assert integerBits >= 1;
-        assert fractionBits >= 0;
-        assert integerBits + fractionBits == 128;
-        assert minUnits <= maxUnits;
-        assert SerializeUtil.fixedBoundsFit( integerBits, minUnits, maxUnits );
+        // U16: a fixed point declaration that does not fit its Q format refuses
+        if ( !SerializeUtil.fixedDeclarationIsValid( integerBits, fractionBits, true, minUnits, maxUnits ) )
+        {
+            return fail( Refusal.VALUE_OUT_OF_RANGE );
+        }
 
         UInt128Value rawMin = Int128Value.fromLong( minUnits ).toUnsigned().shiftLeft( fractionBits );
         UInt128Value rawMax = Int128Value.fromLong( maxUnits ).toUnsigned().shiftLeft( fractionBits );

@@ -39,10 +39,13 @@ public final class MeasureStream implements BitStream
     // bytecode is carried even when -ea is absent, and it counts against
     // inlining thresholds
 
-    private static boolean checkBits32( int bits )
+    // the writer's width bound (U8): a measure runs the writer's contracts,
+    // so a value wider than its field is caught on every writing stream
+    private static boolean checkBits32( int value, int bits )
     {
         assert bits > 0;
         assert bits <= 32;
+        assert SerializeUtil.valueFitsInBits( Integer.toUnsignedLong( value ), bits );
         return true;
     }
 
@@ -77,7 +80,7 @@ public final class MeasureStream implements BitStream
     @Override
     public boolean serializeBits( IntRef value, int bits )
     {
-        assert checkBits32( bits );
+        assert checkBits32( value.value, bits );
         bitsWritten += bits;
         return true;
     }
@@ -116,9 +119,9 @@ public final class MeasureStream implements BitStream
         return true;
     }
 
-    @Override public boolean serializeUint8( IntRef value )  { bitsWritten += 8;  return true; }
+    @Override public boolean serializeUint8( IntRef value )  { assert checkBits32( value.value, 8 );  bitsWritten += 8;  return true; }
 
-    @Override public boolean serializeUint16( IntRef value ) { bitsWritten += 16; return true; }
+    @Override public boolean serializeUint16( IntRef value ) { assert checkBits32( value.value, 16 ); bitsWritten += 16; return true; }
 
     @Override public boolean serializeUint32( IntRef value ) { bitsWritten += 32; return true; }
 
@@ -155,10 +158,17 @@ public final class MeasureStream implements BitStream
         // the measure runs the writer's derivation so the same debug asserts
         // guard a non-conforming declaration or value on every writing stream
         long maxIntegerValue = SerializeUtil.compressedFloatMaxIntegerValue( min, max, resolution );
+        return serializeCompressedFloatPrecomputed( value, maxIntegerValue,
+                                                    SerializeUtil.bitsRequired( 0, (int) maxIntegerValue ), max - min, min );
+    }
+
+    @Override
+    public boolean serializeCompressedFloatPrecomputed( FloatRef value, long maxIntegerValue, int bits, float delta, float min )
+    {
+        assert SerializeUtil.compressedFloatConstantsAreConsistent( maxIntegerValue, bits, delta );
         assert value.value - value.value == 0.0f;
-        assert SerializeUtil.floatBitsAreFinite( Float.floatToRawIntBits(
-            SerializeUtil.compressedFloatReadValue( (int) maxIntegerValue, maxIntegerValue, max - min, min ) ) );
-        bitsWritten += SerializeUtil.bitsRequired( 0, (int) maxIntegerValue );
+        assert SerializeUtil.floatBitsAreFinite( Float.floatToRawIntBits( delta + min ) );
+        bitsWritten += bits;
         return true;
     }
 
@@ -166,6 +176,7 @@ public final class MeasureStream implements BitStream
     {
         assert data != null;
         assert bytes >= 0;
+        assert bytes <= data.length;
         return true;
     }
 
@@ -196,6 +207,7 @@ public final class MeasureStream implements BitStream
         assert SerializeUtil.hasNoInteriorNul( string );
         byte[] utf8 = string.getBytes( StandardCharsets.UTF_8 );
         int length = utf8.length;
+        assert bufferSize >= 1;
         assert length < bufferSize;
         bitsWritten += SerializeUtil.bitsRequired( 0, bufferSize - 1 );
         serializeAlign();
@@ -285,6 +297,16 @@ public final class MeasureStream implements BitStream
     public boolean reject()
     {
         assert false : "reject is read only";
+        return false;
+    }
+
+    /**
+     * A measure refuses nothing (STANDARD.md, "The Measure Stream"; U6):
+     * records nothing, never asserts, and returns false (U9, U14).
+     */
+    @Override
+    public boolean fail( Refusal reason )
+    {
         return false;
     }
 
