@@ -8,7 +8,9 @@ import java.nio.charset.StandardCharsets;
  *
  * Writes assume trusted data: every contract here is a debug assert (run
  * with -ea), never a runtime refusal — the reference's writer-trusted
- * doctrine.
+ * doctrine. The assert is this port's one write-misuse mechanism, the trap
+ * (IMPLEMENTING.md U9): an AssertionError under -ea at the call, room for the
+ * whole operation included (U10); the stream never latches a refusal.
  */
 public final class WriteStream implements BitStream
 {
@@ -64,6 +66,40 @@ public final class WriteStream implements BitStream
         return true;
     }
 
+    // U9, U10: an operation that does not fit the room left is write misuse,
+    // asserted for the WHOLE operation before its first bit, so a wide value
+    // never leaves its low group on the wire ahead of the assertion
+    private boolean checkRoom( long bits )
+    {
+        assert writer.getBitsAvailable() >= bits;
+        return true;
+    }
+
+    // the whole cost of an int_relative write: the tier flags, then the tier's
+    // field, or the final tier's 32 raw bits (the measure's arithmetic)
+    private boolean checkRelativeRoom( int difference )
+    {
+        long bits = 1;
+        if ( difference != 1 )
+        {
+            int tier = 0;
+            for ( ; tier < ReadStream.RELATIVE_TIER_MIN.length; tier++ )
+            {
+                bits += 1;
+                if ( Integer.compareUnsigned( difference, ReadStream.RELATIVE_TIER_MAX[tier] ) <= 0 )
+                {
+                    bits += SerializeUtil.bitsRequired( ReadStream.RELATIVE_TIER_MIN[tier], ReadStream.RELATIVE_TIER_MAX[tier] );
+                    break;
+                }
+            }
+            if ( tier == ReadStream.RELATIVE_TIER_MIN.length )
+            {
+                bits += 32;
+            }
+        }
+        return checkRoom( bits );
+    }
+
     private static boolean checkInt( int value, int min, int max )
     {
         assert min <= max;
@@ -92,6 +128,7 @@ public final class WriteStream implements BitStream
     public boolean serializeBits64( LongRef value, int bits )
     {
         assert checkBits64( value.value, bits );
+        assert checkRoom( bits );
         if ( bits <= 32 )
         {
             writer.writeBits( (int) value.value, bits );
@@ -134,6 +171,7 @@ public final class WriteStream implements BitStream
         {
             return true;            // degenerate range: the value IS the range, nothing to send
         }
+        assert checkRoom( bits );
         // subtract in the unsigned domain: wraps when the range is wider than 2^63
         long unsignedValue = value.value - min;
         if ( bits <= 32 )
@@ -160,6 +198,7 @@ public final class WriteStream implements BitStream
         {
             return true;                    // degenerate range: nothing goes on the wire
         }
+        assert checkRoom( bits );
         // subtract in the unsigned domain: wraps when the range is wider than 2^127
         UInt128Value offset = value.value.toUnsigned().subtract( min.toUnsigned() );
         writeGroups128( offset, bits );
@@ -214,6 +253,7 @@ public final class WriteStream implements BitStream
     @Override
     public boolean serializeUint128( Ref<UInt128Value> value )
     {
+        assert checkRoom( 128 );
         // the low 64-bit half first, then the high half, each as low-then-high 32-bit groups
         writer.writeBits( (int) value.value.lo, 32 );
         writer.writeBits( (int) ( value.value.lo >>> 32 ), 32 );
@@ -245,6 +285,7 @@ public final class WriteStream implements BitStream
     {
         long bits = Double.doubleToRawLongBits( value.value );
         assert SerializeUtil.doubleBitsAreFinite( bits );
+        assert checkRoom( 64 );
         writer.writeBits( (int) bits, 32 );
         writer.writeBits( (int) ( bits >>> 32 ), 32 );
         return true;
@@ -338,6 +379,7 @@ public final class WriteStream implements BitStream
         assert previous >= 0;               // the domain: 0 to 2^31 - 1, previous and current alike
         assert previous < current.value;
         int difference = current.value - previous;
+        assert checkRelativeRoom( difference );
 
         boolean oneBit = difference == 1;
         writer.writeBits( oneBit ? 1 : 0, 1 );
@@ -418,6 +460,7 @@ public final class WriteStream implements BitStream
         // subtract in the unsigned domain: wraps when the range is wider than 2^63
         long offset = value.value - rawMin;
         assert Long.compareUnsigned( offset, rawRange ) <= 0;
+        assert checkRoom( bits );
 
         if ( bits <= 32 )
         {
@@ -459,6 +502,7 @@ public final class WriteStream implements BitStream
 
         UInt128Value offset = value.value.toUnsigned().subtract( rawMin );
         assert offset.compareUnsigned( rawRange ) <= 0;
+        assert checkRoom( bits );
 
         writeGroups128( offset, bits );
         return true;

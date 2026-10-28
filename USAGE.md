@@ -188,9 +188,19 @@ asserts:
 - **Release** (a plain `java` invocation — assertions are disabled by
   default): asserts compile to nothing at runtime, exactly as a C++
   release build compiles `serialize_assert` to nothing. The caller is
-  trusted; misuse produces garbage on the wire (which conforming readers
-  refuse), never memory unsafety — the JVM's own bounds checks backstop
-  the trusted path.
+  trusted; the output after misuse is unspecified (U8, U9) and nothing
+  about it is promised, but never memory unsafety — the JVM's own bounds
+  checks backstop the trusted path.
+
+The trap is the one write-misuse mechanism (IMPLEMENTING.md U9): an
+operation that does not fit the room left in the buffer is misuse like a
+value out of range, asserted for the whole operation before its first
+bit (U10). A write or measure stream has no refusal state: misuse never
+latches a reason, never makes a later operation fail, and returns no
+`false`. `fail( reason )` and a nested object whose serialize function
+returns `false` make the operation return `false` and record nothing, in
+both shapes; `reject()` asserts under `-ea` and returns `false`, recording
+nothing, without it.
 
 The wire for conforming writes is byte identical in both modes, and so
 is every refusal: the read side's obligations are checks, never asserts.
@@ -327,8 +337,8 @@ w.serializeCompressedFloat( new FloatRef( 5.0f ), 0.0f, 10.0f, 0.01f ); // 10 bi
 ```
 
 Finite values outside `[min, max]` clamp on write; writing a non-finite
-value is a contract violation (asserted under `-ea`, clamped in
-release); reads refuse integers smuggled above the quantization ceiling
+value is write misuse (an `AssertionError` under `-ea`, never clamped
+there; without `-ea` the output is unspecified, U9); reads refuse integers smuggled above the quantization ceiling
 as `value_out_of_range`. **The decode must be finite**: at the top of a
 declaration that reaches `Float.MAX_VALUE` the final add can round to
 infinity (`[3 * 2^103, FLT_MAX]` at resolution `2^104` does), so a
@@ -390,9 +400,25 @@ never appear in UTF-8) is refused as `invalid_utf8`. An accepted payload
 is decoded strictly — a `CodingErrorAction.REPORT` decoder, never one
 that substitutes U+FFFD — and real text round trips byte for byte: no
 normalization, no stripped byte order mark, noncharacters and every
-plane kept. A Java string carrying an unpaired surrogate or a NUL is a
-writer contract violation (asserted under `-ea`): the UTF-8 encoder would
-replace the surrogate, so it cannot reach the wire faithfully.
+plane kept. A Java string carrying an unpaired surrogate or a NUL is
+write misuse (an `AssertionError` under `-ea`, IMPLEMENTING.md U3, U4,
+U9): an unpaired surrogate has no strict UTF-8 form. Without `-ea` the
+bytes written after that misuse are unspecified, like every other write
+misuse; whatever a lenient encoder substitutes there (`?`, U+FFFD) is
+that unspecified output, never behaviour to rely on.
+
+**`SerializeUtil.copyString( source, destSize )`** is the family's
+`serialize_copy_string` (U15): it returns the longest prefix of `source`
+that stops at the first NUL, whose strict UTF-8 encoding fits
+`destSize - 1` bytes, and that never ends inside a character — text
+`serializeString` with `bufferSize = destSize` accepts. `destSize` counts
+UTF-8 bytes, not UTF-16 units. A `destSize` below 1, or a source holding
+an unpaired surrogate, is write misuse, asserted under `-ea` (U9).
+
+```java
+String name = SerializeUtil.copyString( player.name, 16 );   // fits a 16-byte string field
+w.serializeString( new Ref<>( name ), 16 );
+```
 
 ## The end of a packet
 

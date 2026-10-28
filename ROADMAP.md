@@ -6,17 +6,11 @@ Planned work for serialize.java. Landed work is in git.
 
 ## Contents
 
-- [Left open at serialize.java 2.1.1](#left-open-at-serializejava-211) (2)
+- [Left open at serialize.java 2.1.2](#left-open-at-serializejava-212) (1)
 
-## Left open at serialize.java 2.1.1
+## Left open at serialize.java 2.1.2
 
-2.1.1 applied reference v2.1.0's uniform rules U1 to U16 and fixed the 2026-10-27 audit findings for this port (test/serialize/tests/UniformRulesTests.java). Two items stay open: serialize_copy_string, which waits on the reference's ruling for languages without bounded buffers, and the read slack contract, which waits on a measurement.
-
-### U15: serialize_copy_string
-
-U15 lists serialize_copy_string as a reference operation every port carries. Whether a language without bounded string buffers needs it is being ruled in the reference; this port waits on that ruling. compressed_float_precomputed landed in 2.1.1. Done when: the reference rules, and this port carries serialize_copy_string or the ruling exempts it.
-
-From: IMPLEMENTING.md U15 at mas-bandwidth/serialize v2.1.0; the serialize_copy_string question left to the reference, 2026-10-27
+2.1.1 applied reference v2.1.0's uniform rules U1 to U16 and fixed the 2026-10-27 audit findings for this port; 2.1.2 applied reference v2.1.1's rulings (U3, U6, U9, U15): SerializeUtil.copyString, the whole-operation room assertion on every write, and the U15 export list (test/serialize/tests/UniformRulesTests.java). One item stays open: the read slack contract, which waits on a measurement.
 
 ### Audit L: measure the read slack contract against the tail window reader
 

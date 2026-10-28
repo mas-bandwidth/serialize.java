@@ -301,7 +301,7 @@ final class FloatTests
             float min = 3.0f * (float) Math.scalb( 1.0, 103 );
             float max = Float.MAX_VALUE;
             float res = (float) Math.scalb( 1.0, 104 );
-            long maxIntegerValue = SerializeUtil.compressedFloatMaxIntegerValue( min, max, res );
+            long maxIntegerValue = SerializeUtil.compressedFloatParams( min, max, res ).maxIntegerValue;
             checkEqual( maxIntegerValue, ( 1L << 24 ) - 2, "the top integer" );
 
             byte[] top = GoldenWire.bytes( 0xFE, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0 );

@@ -87,6 +87,11 @@ public final class Harness
         check( actual == expected, what + ": got " + actual + ", expected " + expected );
     }
 
+    public static void checkEqual( String actual, String expected, String what )
+    {
+        check( expected.equals( actual ), what + ": got \"" + actual + "\", expected \"" + expected + "\"" );
+    }
+
     public static void checkBytesEqual( byte[] actual, byte[] expected, int length, String what )
     {
         for ( int i = 0; i < length; i++ )

@@ -101,8 +101,15 @@ primitive-specialized holder cells (`IntRef`, `LongRef`, `BoolRef`,
   wherever storage fits 64 bits.
 - **128-bit values**: `Int128Value` / `UInt128Value`, two's complement
   pairs of long halves, mirroring the family's emulated pair types.
-- **Utilities**: `SerializeUtil` — `bitsRequired` / `64` / `128`, zig-zag
-  conversion, the compressed-float step count.
+- **Utilities**: `SerializeUtil` — `bitsRequired` / `64` / `128`,
+  `valueFitsInBits`, zig-zag conversion, `floatBitsAreFinite` /
+  `doubleBitsAreFinite`, `compressedFloatParams`, `refusalName`, and
+  `copyString`, the family's `serialize_copy_string` (a string bounded to
+  a UTF-8 byte budget, never cut inside a character). This is the whole
+  public surface IMPLEMENTING.md U15 allows: the reference operations and
+  helpers, plus the Java necessities (the holder cells, the 128-bit pair
+  types, `Refusal` with `fromSpelling`, the inverse of `refusalName`, and
+  `VERSION`, the release metadata).
 - **Composition**: `serializeObject`, which runs a nested `Serializer`
   inline and contributes no bytes of its own — no framing, no length
   prefix, no alignment inserted around it.
