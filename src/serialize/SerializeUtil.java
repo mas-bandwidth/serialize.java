@@ -156,8 +156,9 @@ public final class SerializeUtil
     /*
         The string writer's source is well-formed UTF-16 BY CONTRACT: a Java
         String is UTF-16 code units, and an unpaired surrogate has no UTF-8
-        form. String.getBytes would silently replace it, so a writer handed
-        one is a contract violation, debug-asserted before the encode.
+        form, so a writer handed one is write misuse (U3, U9), asserted under
+        -ea before the encode. Without -ea the bytes String.getBytes emits for
+        it are unspecified output, never documented behaviour.
     */
 
     static boolean isValidUtf16( String string )
@@ -222,7 +223,7 @@ public final class SerializeUtil
      * runtime instead. Returned as a long because the count is an unsigned 32-bit
      * quantity that can exceed Integer.MAX_VALUE.
      */
-    public static long compressedFloatMaxIntegerValue( float min, float max, float res )
+    static long compressedFloatMaxIntegerValue( float min, float max, float res )
     {
         assert min < max && res > 0.0f;
 
@@ -264,7 +265,7 @@ public final class SerializeUtil
      * IMPLEMENTING.md U16: a reader refuses a declaration that fails this as
      * value_out_of_range; a writer and a measure assert it.
      */
-    public static boolean compressedFloatDeclarationIsValid( float min, float max, float res )
+    static boolean compressedFloatDeclarationIsValid( float min, float max, float res )
     {
         if ( !( min < max && res > 0.0f ) )
         {
@@ -297,7 +298,7 @@ public final class SerializeUtil
      * {@code bitsRequired( 0, maxIntegerValue )}, and {@code delta} positive
      * and finite.
      */
-    public static boolean compressedFloatConstantsAreConsistent( long maxIntegerValue, int bits, float delta )
+    static boolean compressedFloatConstantsAreConsistent( long maxIntegerValue, int bits, float delta )
     {
         return maxIntegerValue >= 1 && maxIntegerValue <= 4294967040L
             && bits == bitsRequired( 0, (int) maxIntegerValue )
@@ -306,8 +307,9 @@ public final class SerializeUtil
 
     static int compressedFloatWriteCode( float value, float min, float delta, long maxIntegerValue )
     {
-        // writing a non-finite value (NaN, +/-Inf) is non-conforming — assert in
-        // debug. In release the clamp below keeps the integer conversion defined.
+        // writing a non-finite value (NaN, +/-Inf) is write misuse (U9): asserted
+        // under -ea, never clamped there. Without -ea the clamp below only keeps
+        // the integer conversion defined; its output is unspecified to callers.
         assert value - value == 0.0f;
 
         // clamp with the !>= / !<= form so a NaN value is forced into range
@@ -391,6 +393,48 @@ public final class SerializeUtil
     public static String refusalName( Refusal reason )
     {
         return reason == null ? "none" : reason.toString();
+    }
+
+    /**
+     * {@code serialize_copy_string} (IMPLEMENTING.md U15): the longest prefix
+     * of {@code source} whose strict UTF-8 encoding fits {@code destSize - 1}
+     * bytes, cut at the first NUL and never inside a character. On the UTF-8
+     * bytes: take the bytes before the first NUL; if more than
+     * {@code destSize - 1} remain, keep that many, then drop bytes from the end
+     * while the first byte left out is a continuation byte ({@code 10xxxxxx}).
+     * The result is text {@code serializeString} with
+     * {@code bufferSize = destSize} accepts.
+     *
+     * Java strings are values, so the prefix is returned; {@code destSize}
+     * counts bytes of the strict UTF-8 encoding, never UTF-16 units. A
+     * {@code destSize} below 1, and a source holding a lone surrogate (no
+     * strict UTF-8 form, U3), are write misuse: an {@code AssertionError}
+     * under {@code -ea} (U9). Without {@code -ea} the result after misuse is
+     * unspecified.
+     *
+     * @param source the text to copy.
+     * @param destSize the destination's size in bytes, NUL included, at least 1.
+     * @return the bounded prefix.
+     */
+    public static String copyString( String source, int destSize )
+    {
+        assert destSize >= 1 : "copyString: destSize must be at least 1";
+        assert source != null;
+        assert isValidUtf16( source ) : "copyString: a lone surrogate has no strict UTF-8 form";
+        int nul = source.indexOf( '\u0000' );
+        String text = nul < 0 ? source : source.substring( 0, nul );
+        byte[] utf8 = text.getBytes( java.nio.charset.StandardCharsets.UTF_8 );
+        int limit = Math.max( destSize - 1, 0 );
+        if ( utf8.length <= limit )
+        {
+            return text;
+        }
+        int keep = limit;
+        while ( keep > 0 && ( utf8[keep] & 0xC0 ) == 0x80 )
+        {
+            keep--;
+        }
+        return new String( utf8, 0, keep, java.nio.charset.StandardCharsets.UTF_8 );
     }
 
     static boolean fixedBoundsFit( int integerBits, long minUnits, long maxUnits )

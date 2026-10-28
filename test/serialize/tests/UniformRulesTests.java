@@ -274,6 +274,57 @@ final class UniformRulesTests
             checkEqual( measure.getBitsProcessed(), 1, "one bit measured" );
         } );
 
+        test( "U9: a nested object that fails on a write or measure returns false and records nothing", () -> {
+            WriteStream writer = new WriteStream( new byte[8], 8 );
+            MeasureStream measure = new MeasureStream();
+            check( !writer.serializeObject( stream -> stream.serializeBits( new IntRef( 1 ), 1 ) && stream.fail( Refusal.REJECTED ) ), "write object false" );
+            check( !measure.serializeObject( stream -> stream.serializeBits( new IntRef( 1 ), 1 ) && false ), "measure object false" );
+            // nothing latched: the next operation goes through as on a fresh stream
+            check( writer.serializeBits( new IntRef( 3 ), 2 ), "the writer still writes" );
+            check( measure.serializeBits( new IntRef( 3 ), 2 ), "the measure still measures" );
+            checkEqual( writer.getBitsProcessed(), 3, "the object's bit and two more" );
+            checkEqual( measure.getBitsProcessed(), 3, "the object's bit and two more, measured" );
+            check( writer.serializeObject( stream -> true ) && measure.serializeObject( stream -> true ), "witness: an object returning true" );
+        } );
+
+        // ---- U15: serialize_copy_string, on the strict UTF-8 encoding of a UTF-16 string ----
+        // The reference's test_copy_string vectors. The two ill-formed byte
+        // vectors ("ab\x80\x80" and "\xC3\xA9\xA9\xA9") cannot be held by a
+        // Java String, so they are not this port's to test (the ruling).
+
+        test( "U15: copyString keeps the longest whole-character UTF-8 prefix that fits destSize - 1, cut at NUL", () -> {
+            checkEqual( SerializeUtil.copyString( "abc", 8 ), "abc", "(abc, 8)" );
+            checkEqual( SerializeUtil.copyString( "a\u0000bc", 8 ), "a", "(a NUL bc, 8)" );
+            checkEqual( SerializeUtil.copyString( "abcdefghij", 4 ), "abc", "(abcdefghij, 4)" );
+            checkEqual( SerializeUtil.copyString( "éé", 4 ), "é", "(C3 A9 C3 A9, 4)" );
+            checkEqual( SerializeUtil.copyString( "éé", 3 ), "é", "(C3 A9 C3 A9, 3)" );
+            String grin = "a😀";             // a F0 9F 98 80
+            checkEqual( SerializeUtil.copyString( grin, 3 ), "a", "(a + 4-byte, 3)" );
+            checkEqual( SerializeUtil.copyString( grin, 4 ), "a", "(a + 4-byte, 4)" );
+            checkEqual( SerializeUtil.copyString( grin, 5 ), "a", "(a + 4-byte, 5)" );
+            checkEqual( SerializeUtil.copyString( grin, 6 ), grin, "(a + 4-byte, 6)" );
+            checkEqual( SerializeUtil.copyString( "abc", 1 ), "", "(abc, 1)" );
+            // the result is what serializeString with bufferSize = destSize accepts
+            for ( int destSize = 1; destSize <= 8; destSize++ )
+            {
+                String copy = SerializeUtil.copyString( "xé😀y", destSize );
+                MeasureStream measure = new MeasureStream();
+                check( measure.serializeString( new Ref<>( copy ), destSize ), "fits bufferSize " + destSize );
+            }
+        } );
+
+        test( "U9 U15: copyString with destSize below 1, or a lone surrogate, is write misuse (asserted under -ea)", () -> {
+            if ( !assertionsEnabled() )
+            {
+                return;
+            }
+            check( fires( () -> SerializeUtil.copyString( "abc", 0 ) ), "destSize 0" );
+            check( fires( () -> SerializeUtil.copyString( "abc", -1 ) ), "destSize -1" );
+            check( fires( () -> SerializeUtil.copyString( "a\uD800", 8 ) ), "a lone high surrogate" );
+            check( fires( () -> SerializeUtil.copyString( "\uDC00b", 8 ) ), "a lone low surrogate" );
+            check( !fires( () -> SerializeUtil.copyString( "a😀", 8 ) ), "witness: a surrogate pair" );
+        } );
+
         test( "U12: end on a write or measure stream is a no-op returning true", () -> {
             WriteStream writer = new WriteStream( new byte[8], 8 );
             check( writer.serializeBits( new IntRef( 5 ), 3 ) && writer.serializeEnd() && writer.serializeEnd(), "write end, twice" );
@@ -450,6 +501,48 @@ final class UniformRulesTests
 
             WriteStream witness = new WriteStream( new byte[8], 8 );
             check( !fires( () -> witness.serializeString( new Ref<>( "abcdefg" ), 256 ) ), "witness: 1 + 7 bytes fit in 8" );
+        } );
+
+        test( "U9 U10: every operation that does not fit the room left asserts before writing any bit, and latches nothing", () -> {
+            // 30 bits in, 34 left: each operation below needs more, and the
+            // wide ones would fit their first 32-bit group or their tier flags
+            java.util.List<java.util.function.Consumer<WriteStream>> ops = java.util.List.of(
+                s -> s.serializeBits64( new LongRef( 0L ), 64 ),
+                s -> s.serializeInt64( new LongRef( 0L ), Long.MIN_VALUE, Long.MAX_VALUE ),
+                s -> s.serializeUint64( new LongRef( 0L ) ),
+                s -> s.serializeDouble( new DoubleRef( 1.0 ) ),
+                s -> s.serializeUint128( new Ref<>( new UInt128Value( 0L, 0L ) ) ),
+                s -> s.serializeInt128( new Ref<>( Int128Value.fromLong( 0L ) ), Int128Value.fromLong( Long.MIN_VALUE ), Int128Value.fromLong( Long.MAX_VALUE ) ),
+                s -> s.serializeFixed( new LongRef( 0L ), 32, 32, -( 1L << 30 ), 1L << 30 ),
+                s -> s.serializeFixed128( new Ref<>( Int128Value.fromLong( 0L ) ), 64, 64, -1000L, 1000L ),
+                s -> s.serializeIntRelative( 0, new IntRef( Integer.MAX_VALUE ) ),
+                s -> { s.serializeBits( new IntRef( 0 ), 32 ); s.serializeBits( new IntRef( 0 ), 32 ); } );
+            int index = 0;
+            for ( java.util.function.Consumer<WriteStream> op : ops )
+            {
+                final int which = index++;
+                WriteStream writer = new WriteStream( new byte[8], 8 );
+                check( writer.serializeBits( new IntRef( 0x2BCDABCD ), 30 ) );
+                long before = which == ops.size() - 1 ? 62 : 30;       // the last op's first 32 bits fit by design
+                check( fires( () -> op.accept( writer ) ), "op " + which + " asserts" );
+                checkEqual( writer.getBitsProcessed(), before, "op " + which + ": no bit of the failing operation was written" );
+                // nothing latched: what still fits is written
+                check( writer.serializeBits( new IntRef( 1 ), 1 ), "op " + which + ": the writer still writes" );
+            }
+            WriteStream witness = new WriteStream( new byte[16], 16 );
+            check( witness.serializeBits( new IntRef( 0x2BCDABCD ), 30 ) );
+            check( !fires( () -> witness.serializeDouble( new DoubleRef( 1.0 ) ) ), "witness: a double in the 98 bits left" );
+        } );
+
+        test( "U6 U9: a measure catches non-finite float and double values as the write does", () -> {
+            check( fires( () -> new MeasureStream().serializeFloat( new FloatRef( Float.NaN ) ) ), "measure float NaN" );
+            check( fires( () -> new MeasureStream().serializeFloat( new FloatRef( Float.POSITIVE_INFINITY ) ) ), "measure float inf" );
+            check( fires( () -> new MeasureStream().serializeDouble( new DoubleRef( Double.NaN ) ) ), "measure double NaN" );
+            check( fires( () -> new MeasureStream().serializeDouble( new DoubleRef( Double.NEGATIVE_INFINITY ) ) ), "measure double -inf" );
+            check( fires( () -> new MeasureStream().serializeCompressedFloat( new FloatRef( Float.NaN ), 0.0f, 10.0f, 0.01f ) ), "measure compressed NaN" );
+            check( fires( () -> new WriteStream( new byte[16], 16 ).serializeCompressedFloat( new FloatRef( Float.POSITIVE_INFINITY ), 0.0f, 10.0f, 0.01f ) ), "write compressed inf, never clamped" );
+            check( !fires( () -> new MeasureStream().serializeFloat( new FloatRef( Float.MAX_VALUE ) ) ), "witness: FLT_MAX" );
+            check( !fires( () -> new MeasureStream().serializeDouble( new DoubleRef( Double.MAX_VALUE ) ) ), "witness: DBL_MAX" );
         } );
 
         test( "U16: bytes with a destination shorter than the count are caught on write and measure", () -> {
