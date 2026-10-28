@@ -183,9 +183,11 @@ fuzz-control: $(JAZZER_JAR) $(FUZZ_CLASSES)/.stamp $(SABOTAGE_CLASSES)/.stamp
 # corpus, against a library whose ranged int read accepts the offset one past
 # its span, within the smoke budget, assertions off (the release shape the
 # planted defect would ship in). Green only when the fuzzer traps on the
-# planted defect (an int decoded outside its range) rather than on anything
-# else; a hostile read that runs out the clock against a broken reader
-# measures nothing.
+# planted defect rather than on anything else: an int decoded outside its
+# range, or a string length (read as a ranged int) one past its buffer, the
+# two places the off-by-one surfaces. Anything else fails the control; a
+# hostile read that runs out the clock against a broken reader measures
+# nothing.
 fuzz-read-control: $(JAZZER_JAR) $(FUZZ_CLASSES)/.stamp $(READ_SABOTAGE_CLASSES)/.stamp
 	rm -rf build/fuzz-read-control
 	mkdir -p build/fuzz-read-control/corpus build/fuzz-read-control/artifacts
@@ -199,7 +201,7 @@ fuzz-read-control: $(JAZZER_JAR) $(FUZZ_CLASSES)/.stamp $(READ_SABOTAGE_CLASSES)
 		echo "fuzz-read-control: RED: the planted read defect survived $(FUZZ_TIME) s of fuzzing"; exit 1; \
 	fi; \
 	elapsed=$$(( $$(date +%s) - start )); \
-	if ! grep -E 'serialize\.fuzz\.FuzzCheck: int: value outside' build/fuzz-read-control/log; then \
+	if ! grep -E 'serialize\.fuzz\.FuzzCheck: (int: value outside|string: longer than its buffer)' build/fuzz-read-control/log; then \
 		tail -n 40 build/fuzz-read-control/log; \
 		echo "fuzz-read-control: RED: the fuzzer stopped, but not on the planted read defect"; exit 1; \
 	fi; \
