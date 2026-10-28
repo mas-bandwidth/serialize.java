@@ -4,6 +4,7 @@ import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 
 import serialize.BoolRef;
+import serialize.CompressedFloatParams;
 import serialize.DoubleRef;
 import serialize.FloatRef;
 import serialize.Int128Value;
@@ -29,6 +30,10 @@ import serialize.UInt128Value;
  * scalar destination is left unwritten, and the next read on the failed
  * stream refuses too without consuming a bit or changing the reason.
  *
+ * The string operation's buffer size is chosen by the op parameter from a
+ * table that includes caller misuse (sizes below 1), which must refuse as
+ * value_out_of_range before any bits move rather than throw (U7).
+ *
  * Input layout, as the reference: the first {@link #NUM_OPS} bytes are an op
  * program (the low nibble selects the operation, the high nibble is its
  * parameter), the rest is the hostile bitstream.
@@ -51,7 +56,16 @@ public final class HostileReadFuzzer
 
     private static final int SENTINEL = 0x5EED5EED;
 
+    // the string buffer sizes the op parameter selects: the caller misuse
+    // values a reader must refuse (0, -1, -7, MIN_VALUE), the smallest legal
+    // ones, the boundaries of each length field width, and the widest
+    static final int[] STRING_BUFFER_SIZES = {
+        0, -1, -7, Integer.MIN_VALUE, 1, 2, 3, 16, 255, 256, 257, 65536, 1 << 20, 1 << 30, Integer.MAX_VALUE - 1, Integer.MAX_VALUE,
+    };
+
     private static final long SENTINEL64 = 0x5EED5EED5EED5EEDL;
+
+    private static final CompressedFloatParams CF_PARAMS = SerializeUtil.compressedFloatParams( -10.0f, +10.0f, 0.01f );
 
     /** Jazzer's entry point. */
     public static void fuzzerTestOneInput( byte[] data )
@@ -252,8 +266,13 @@ public final class HostileReadFuzzer
 
                 case 7:
                 {
+                    // odd parameters drive the precomputed form with the same constants:
+                    // the two are wire identical, so they refuse and accept alike
                     FloatRef value = new FloatRef( 1.5f );
-                    if ( !stream.serializeCompressedFloat( value, -10.0f, +10.0f, 0.01f ) ) return refused( stream, Float.floatToRawIntBits( value.value ) == Float.floatToRawIntBits( 1.5f ) );
+                    final boolean ok = ( param & 1 ) == 0
+                        ? stream.serializeCompressedFloat( value, -10.0f, +10.0f, 0.01f )
+                        : stream.serializeCompressedFloatPrecomputed( value, CF_PARAMS.maxIntegerValue, CF_PARAMS.bits, CF_PARAMS.delta, -10.0f );
+                    if ( !ok ) return refused( stream, Float.floatToRawIntBits( value.value ) == Float.floatToRawIntBits( 1.5f ) );
                     accepted( stream );
                     FuzzCheck.check( SerializeUtil.floatBitsAreFinite( Float.floatToRawIntBits( value.value ) ), "compressed_float: accepted a non-finite value" );
                     trace.add( Float.floatToRawIntBits( value.value ) );
@@ -296,11 +315,25 @@ public final class HostileReadFuzzer
 
                 case 10:
                 {
+                    // the buffer size is fuzzed too, caller misuse included: a size
+                    // below 1 must refuse as value_out_of_range before any bits move,
+                    // whatever the wire holds (IMPLEMENTING.md U7)
+                    final int bufferSize = STRING_BUFFER_SIZES[param];
+                    final long before = stream.getBitsProcessed();
                     Ref<String> value = new Ref<>( null );
-                    if ( !stream.serializeString( value, 256 ) ) return refused( stream, value.value == null );
+                    if ( !stream.serializeString( value, bufferSize ) )
+                    {
+                        if ( bufferSize < 1 )
+                        {
+                            FuzzCheck.check( stream.getRefusal() == Refusal.VALUE_OUT_OF_RANGE, "string: a buffer below 1 was not value_out_of_range" );
+                            FuzzCheck.check( stream.getBitsProcessed() == before, "string: a buffer below 1 moved bits" );
+                        }
+                        return refused( stream, value.value == null );
+                    }
+                    FuzzCheck.check( bufferSize >= 1, "string: accepted with a buffer below 1" );
                     accepted( stream );
                     byte[] utf8 = value.value.getBytes( StandardCharsets.UTF_8 );
-                    FuzzCheck.check( utf8.length < 256, "string: longer than its buffer" );
+                    FuzzCheck.check( utf8.length < bufferSize, "string: longer than its buffer" );
                     FuzzCheck.check( value.value.indexOf( '\0' ) < 0, "string: accepted an embedded NUL" );
                     FuzzCheck.check( StandardCharsets.UTF_8.newEncoder().canEncode( value.value ), "string: decoded text holds an unpaired surrogate" );
                     trace.add( value.value.hashCode() );

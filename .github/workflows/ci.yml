@@ -28,10 +28,12 @@ jobs:
   # through every ReadStream primitive and traps on a throw, an out of contract
   # value, or a refusal that breaks the refusal contract; the round trip traps
   # on any write/read asymmetry and on a measure that under-measures. The
-  # negative control runs first: the round trip target against a library with
+  # negative controls run first: the round trip target against a library with
   # one asymmetry planted (fuzz/serialize/fuzz/Sabotage.java), from an empty
   # corpus, must trap on it within the same 60 s budget, so a green smoke is a
-  # fuzzer seen to go red. .github/workflows/nightly-fuzz.yml runs the long
+  # fuzzer seen to go red. The hostile read has its own: the target against a
+  # library with one read refusal off by one must trap on it, and the hostile
+  # read runs a second time with assertions off, the release shape. .github/workflows/nightly-fuzz.yml runs the long
   # version with a cumulative corpus.
   fuzz:
     name: fuzz (Jazzer)
@@ -44,8 +46,14 @@ jobs:
           java-version: 21
       - name: Negative control (a planted asymmetry must be caught within 60 s)
         run: make fuzz-control JDK_HOME="$JAVA_HOME" FUZZ_TIME=60
+      - name: Negative control (a planted read defect must be caught within 60 s)
+        run: make fuzz-read-control JDK_HOME="$JAVA_HOME" FUZZ_TIME=60
       - name: Fuzz hostile read
         run: make fuzz-read JDK_HOME="$JAVA_HOME" FUZZ_TIME=60
+      # the release shape: every read refusal is a check, never an assert, so
+      # the hostile read must hold with assertions off too
+      - name: Fuzz hostile read (assertions off)
+        run: make fuzz-read JDK_HOME="$JAVA_HOME" FUZZ_TIME=60 FUZZ_DA=1
       - name: Fuzz round trip
         run: make fuzz-roundtrip JDK_HOME="$JAVA_HOME" FUZZ_TIME=60
       - name: Upload crash reproducers
@@ -56,6 +64,7 @@ jobs:
           path: |
             fuzz-artifacts
             build/fuzz-control
+            build/fuzz-read-control
           if-no-files-found: ignore
 
   spec-sync:
