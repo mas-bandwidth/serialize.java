@@ -11,7 +11,7 @@ public final class SerializeUtil
     private SerializeUtil() {}
 
     /** The library version, matching the release tag. */
-    public static final String VERSION = "2.1.0";
+    public static final String VERSION = "2.1.1";
 
     /**
      * Does a value fit in a field of this width? STANDARD.md bounds a
