@@ -40,7 +40,7 @@ static boolean serializePlayer( BitStream stream, Player player )
 byte[] buffer = new byte[64];                      // length a multiple of 8
 WriteStream writer = new WriteStream( buffer, buffer.length );
 serializePlayer( writer, player );                 // -> true
-writer.flush();                                    // ALWAYS flush before touching the bytes
+writer.flush();                                    // REQUIRED: the buffer is unspecified until flush
 int packetBytes = (int) writer.getBytesProcessed(); // 5 bytes: 7 + 1 + 32 bits
 
 // read
@@ -57,20 +57,33 @@ serializePlayer( measure, player );                // -> true
 ```
 
 `WriteStream` needs a buffer whose size is a multiple of 8 (the writer
-stores qwords to memory); the packet to send is the first
-`getBytesProcessed()` bytes. `MeasureStream` touches no memory at all —
+stores qwords to memory; asserted under `-ea`, U1); the packet to send is the first
+`getBytesProcessed()` bytes. **Flush is required**: the buffer's contents are
+unspecified until `flush()` is called after the last operation (U11). `MeasureStream` touches no memory at all —
 it prices a message so you can size buffers; its bound is conservative
 (see [Measuring](#measuring)).
 
-**The read allocation contract**, matching the C++ reference: the byte
-array handed to `ReadStream` (or `BitReader`) must extend **at least 8
-bytes past the end of the data being read**, because the reader loads
-8-byte windows at byte granularity. The bytes past the end are loaded
-but never interpreted — they can never influence a decoded value or an
-accept/reject decision. Reading a packet out of the buffer it was
-written into, as above, satisfies the contract for free; a packet
-arriving from a socket just needs to land in an array 8 bytes longer
-than the largest packet.
+**The read allocation contract.** The byte array handed to `ReadStream`
+(or `BitReader`) may be **any size of at least the data being read**:
+an array sized exactly to the packet is correct. The reader loads 8-byte
+windows at byte granularity; with **at least 8 bytes of slack** past the
+data every window loads straight from the array, which is the fast path.
+With less slack, `reset` (and the constructor) copies the final bytes of
+the data into a 16-byte zero-padded tail window, and reads near the end
+load from it instead. Either way the bytes past the end are loaded but
+never interpreted — they can never influence a decoded value or an
+accept/reject decision. Every read pays one well-predicted branch to
+choose the array or the tail, slack or not: unlike the C++ reference,
+which requires the slack and loads unconditionally, this port accepts a
+tight array at that per-read cost (whether to require the slack instead
+is open in [ROADMAP.md](ROADMAP.md), pending a measurement). Reading a
+packet out of the buffer it was written into, as above, has the slack
+for free; a packet arriving from a socket lands in an array 8 bytes
+longer than the largest packet to keep it.
+
+A byte count outside the array (negative, or past its length) is the
+caller's misuse: the stream refuses it at construction or `reset` as
+`value_out_of_range`, and every read on it refuses (IMPLEMENTING.md U7).
 
 All three streams expose `getBitsProcessed()`, `getBytesProcessed()`,
 `isWriting()` / `isReading()`, `getAlignBits()`, and `reset(...)` for
@@ -86,6 +99,28 @@ everything, because the wire is a trust boundary.
 On the read side, every failure — a truncated read, a value outside its
 range, nonzero alignment padding, a non-finite float, a malformed string,
 bytes after the end — returns `false`, and hostile bytes never throw.
+
+**A reader never traps, on the caller's misuse either** (IMPLEMENTING.md
+U7, U16). A declaration that cannot be right is refused as
+`value_out_of_range` before any bits move, in every build, with or
+without `-ea`: a bit count outside `[1,32]` (`[1,64]` for `serializeBits64`),
+`min > max` on a ranged read, a string `bufferSize` below 1, a `bytes`
+count larger than the destination array (or a `null` one), an
+`int_relative` `previous` below 0, a fixed point declaration that does not
+fit its Q format, a compressed float declaration that is not conforming,
+and precomputed compressed float constants that cannot be right. The
+failure state is checked first, so a stream that already refused keeps its
+first reason. On a write or a measure the same declarations are asserted
+under `-ea`, the one write-misuse mechanism of this port (U9).
+
+**`fail( reason )`** is public on every stream (U14). On a read stream it
+latches the reason through the same latch as every refusal (the first
+wins), and `null` or `Refusal.NONE` record `rejected`, never none. On a
+write or measure stream it records nothing, never asserts, and returns
+`false`; a measure refuses nothing (U6). `SerializeUtil.refusalName( reason )`
+is the refusal-name function: the family spelling, and `"none"` for no
+refusal. (`Enum.name()` returns the Java constant name, `PAST_END`, and is
+not the family spelling.)
 
 **Every refusal has a reason.** `getRefusal()` names it from the
 standard's closed list, as a `Refusal` whose `toString()` is the family
@@ -302,6 +337,20 @@ asserts that its declaration's top decodes finite.
 `SerializeUtil.compressedFloatMaxIntegerValue` exposes the declaration's
 step count for callers pricing a format.
 
+**The precomputed form** (U15), the port of the reference's
+`serialize_compressed_float_precomputed`: `SerializeUtil.compressedFloatParams(min, max, res)`
+derives the wire constants once, and
+`serializeCompressedFloatPrecomputed(ref, p.maxIntegerValue, p.bits, p.delta, min)`
+uses them at every call, wire identical to the unified form. A reader refuses
+constants that cannot be right (`bits` not `bitsRequired(0, maxIntegerValue)`,
+`maxIntegerValue` outside `[1, 4294967040]`, `delta` not positive and finite)
+as `value_out_of_range`; a writer asserts them.
+
+```java
+CompressedFloatParams p = SerializeUtil.compressedFloatParams( 0.0f, 10.0f, 0.01f );
+w.serializeCompressedFloatPrecomputed( new FloatRef( 5.0f ), p.maxIntegerValue, p.bits, p.delta, 0.0f ); // 10 bits
+```
+
 ## Raw bytes
 
 `serializeBytes(data, bytes)` aligns to the byte boundary (the alignment
@@ -506,8 +555,11 @@ byte[] out = new byte[3];
 br.readBytes( out, 3 );                           // out is now { 1, 2, 3 }
 ```
 
-The reader carries the same allocation contract as `ReadStream`: 8 bytes
-of slack past the data.
+The reader carries the same allocation contract as `ReadStream`: any
+array of at least the data, 8 bytes of slack past it for the fast path.
+`BitReader` and `BitWriter` are the raw engine: their contracts are
+asserted under `-ea` only, and a misused one may throw. The refusals of
+U7 belong to `ReadStream`.
 
 ## Wire compatibility
 

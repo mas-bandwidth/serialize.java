@@ -76,6 +76,19 @@ public interface BitStream
      */
     boolean serializeCompressedFloat( FloatRef value, float min, float max, float resolution );
 
+    /**
+     * The precomputed companion of {@link #serializeCompressedFloat}, the port
+     * of the reference's {@code serialize_compressed_float_precomputed}: the
+     * constants are exactly what {@link SerializeUtil#compressedFloatParams}
+     * derives from the declaration, so the per-call derivation is never paid.
+     * Wire identical to the unified form. A reader refuses constants that
+     * cannot be right (IMPLEMENTING.md U16: {@code bits} not
+     * {@code bitsRequired( 0, maxIntegerValue )}, {@code maxIntegerValue}
+     * outside [1, 4294967040], {@code delta} not positive and finite) as
+     * {@link Refusal#VALUE_OUT_OF_RANGE}; a writer and a measure assert them.
+     */
+    boolean serializeCompressedFloatPrecomputed( FloatRef value, long maxIntegerValue, int bits, float delta, float min );
+
     /** Aligns first, then {@code bytes} raw bytes. The count is not written: both sides must agree on it. */
     boolean serializeBytes( byte[] data, int bytes );
 
@@ -130,6 +143,18 @@ public interface BitStream
      * it is caller error, asserted in the checked build, and returns false.
      */
     boolean reject();
+
+    /**
+     * Fails the stream with a reason, the port of the reference's
+     * {@code serialize_fail} (IMPLEMENTING.md U14). On a read stream it
+     * latches through the same latch as every refusal, so the first reason
+     * wins; {@code null} or {@link Refusal#NONE} records
+     * {@link Refusal#REJECTED}. On a write or a measure stream there is no
+     * refusal to record: it records nothing, never asserts, and returns false
+     * (U6, U9). Always false, so a serialize function can
+     * {@code return stream.fail( reason );}.
+     */
+    boolean fail( Refusal reason );
 
     /**
      * The end of the object. A writer's end emits nothing and a measure's
