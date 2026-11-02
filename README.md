@@ -174,7 +174,7 @@ and off. Both complementary destination patterns must reach the first refusal
 of all 28 named read cases, including later members of grouped reads.
 Seven copied-reader controls plant destination writes that preserve the first
 pattern; the same oracle must catch each under the second pattern. The integer
-controls overwrite only the upper half, so checking only low bits cannot pass.
+controls include partial destination writes in the high and low halves.
 Nine further source controls prove independent post-refusal checks for
 degenerate integer/fixed ranges, align, zero bytes, end, and object composition.
 Each probe checks the result, position, reason, and scalar destination (or
