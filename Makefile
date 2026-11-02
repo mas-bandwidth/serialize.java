@@ -210,3 +210,26 @@ fuzz-read-control: $(JAZZER_JAR) $(FUZZ_CLASSES)/.stamp $(READ_SABOTAGE_CLASSES)
 
 clean:
 	rm -rf build
+
+# Deterministic hostile qualification is independent of Jazzer discovery. Both
+# destination patterns must reach every first refusal, including grouped reads.
+.PHONY: fuzz-replay fuzz-sentinel-controls
+fuzz-replay: $(FUZZ_CLASSES)/.stamp
+	$(JAVA) -ea -cp $(CLASSES):$(FUZZ_CLASSES) serialize.fuzz.HostileReadReplay
+	$(JAVA) -da -cp $(CLASSES):$(FUZZ_CLASSES) serialize.fuzz.HostileReadReplay
+
+# All planted writes preserve the first sentinel (and the bits controls preserve
+# the low half). Only the complementary full-width oracle detects them.
+fuzz-sentinel-controls: fuzz-replay
+	@set -eu; for ctl in bool bits bits64 float double int128 uint128; do \
+	  dir=build/fuzz-sentinel-controls/$$ctl; mkdir -p $$dir/src $$dir/classes; \
+	  $(JAVA) -cp $(FUZZ_CLASSES) serialize.fuzz.SentinelSabotage src/serialize/ReadStream.java $$dir/src/ReadStream.java $$ctl; \
+	  $(JAVAC) --release 17 -Xlint:all -Werror -cp $(CLASSES) -d $$dir/classes $$dir/src/ReadStream.java; \
+	  for mode in -ea -da; do \
+	    if $(JAVA) $$mode -cp $$dir/classes:$(CLASSES):$(FUZZ_CLASSES) serialize.fuzz.HostileReadReplay > $$dir/$$mode.log 2>&1; then \
+	      echo "sentinel control $$ctl $$mode survived"; exit 1; \
+	    fi; \
+	    grep -q "a refused read wrote its scalar destination" $$dir/$$mode.log || { cat $$dir/$$mode.log; exit 1; }; \
+	    echo "sentinel control $$ctl $$mode caught the planted destination write"; \
+	  done; \
+	done

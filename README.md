@@ -164,9 +164,18 @@ make test-release  # the same suite with assertions off, the release shape
 make controls      # the negative controls: sabotaged readers must fail exactly their rule's vectors
 make fuzz          # the coverage guided fuzz targets, FUZZ_TIME seconds each (default 60)
 make fuzz-control  # the fuzzer's negative control: a planted asymmetry must be caught
+make fuzz-sentinel-controls # deterministic first-refusal replay and seven source controls
 ```
 
 ## Testing
+
+`make fuzz-sentinel-controls` replays 7,777 hostile inputs with assertions on
+and off. Both complementary destination patterns must reach the first refusal
+of all 27 named primitive cases, including later members of grouped reads.
+Seven copied-reader controls plant destination writes that preserve the first
+pattern; the same oracle must catch each under the second pattern. The integer
+controls overwrite only the upper half, so checking only low bits cannot pass.
+
 
 `make test` runs the suite with assertions enabled (`-ea`): writer
 contracts are `assert` statements, so this is the checked shape.
