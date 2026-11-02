@@ -144,7 +144,36 @@ public final class HostileReadFuzzer
         FuzzCheck.check( echo.value == sentinel, "a read after a refusal wrote its destination" );
         FuzzCheck.check( stream.getBitsProcessed() == bits, "a read after a refusal consumed bits" );
         FuzzCheck.check( stream.getRefusal() == reason, "a read after a refusal changed the reason" );
+
+        // These APIs have independent zero-bit success paths. A refused one-bit
+        // read alone cannot prove that any of them respects the failure latch.
+        IntRef integer = new IntRef( sentinel );
+        terminal( stream, stream.serializeInt( integer, 0, 0 ), integer.value == sentinel, reason, bits, "int" );
+        long sentinel64 = Integer.toUnsignedLong( sentinel ) * 0x100000001L;
+        LongRef wide = new LongRef( sentinel64 );
+        terminal( stream, stream.serializeInt64( wide, 0, 0 ), wide.value == sentinel64, reason, bits, "int64" );
+        Int128Value pattern = new Int128Value( sentinel64, sentinel64 );
+        Ref<Int128Value> widest = new Ref<>( pattern );
+        terminal( stream, stream.serializeInt128( widest, Int128Value.ZERO, Int128Value.ZERO ), widest.value == pattern, reason, bits, "int128" );
+        terminal( stream, stream.serializeFixed( wide, 16, 16, 0, 0 ), wide.value == sentinel64, reason, bits, "fixed" );
+        terminal( stream, stream.serializeFixed128( widest, 112, 16, 0, 0 ), widest.value == pattern, reason, bits, "fixed128" );
+        terminal( stream, stream.serializeAlign(), true, reason, bits, "align" );
+        terminal( stream, stream.serializeBytes( EMPTY, 0 ), true, reason, bits, "bytes" );
+        terminal( stream, stream.serializeEnd(), true, reason, bits, "end" );
+        IntRef calls = new IntRef();
+        boolean object = stream.serializeObject( ignored -> { calls.value++; return true; } );
+        terminal( stream, object, calls.value == 0, reason, bits, "object" );
         return false;
+    }
+
+    private static final byte[] EMPTY = new byte[0];
+
+    private static void terminal( ReadStream stream, boolean ok, boolean unwritten, Refusal reason, long bits, String operation )
+    {
+        FuzzCheck.check( !ok, operation + ": accepted after refusal" );
+        FuzzCheck.check( unwritten, operation + ": wrote a destination or invoked a callback after refusal" );
+        FuzzCheck.check( stream.getBitsProcessed() == bits, operation + ": consumed bits after refusal" );
+        FuzzCheck.check( stream.isFailed() && stream.getRefusal() == reason, operation + ": changed reason after refusal" );
     }
 
     private static void accepted( ReadStream stream )
@@ -387,7 +416,8 @@ public final class HostileReadFuzzer
                     IntRef after = new IntRef( sentinel );
                     FuzzCheck.check( !stream.serializeBits( after, 1 ), "end: a bit remained after an accepted end" );
                     FuzzCheck.check( stream.getRefusal() == Refusal.PAST_END, "end: the read past an accepted end was not past_end" );
-                    return false;
+                    trace.operation = "BitsAfterEnd";
+                    return refused( stream, after.value == sentinel, trace, sentinel );
                 }
 
                 case 12:

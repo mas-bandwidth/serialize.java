@@ -11,7 +11,7 @@ public final class HostileReadReplay
     private HostileReadReplay() {}
 
     private static final Set<String> EXPECTED = Set.of(
-        "Bits", "Int", "IntFull", "IntBounded", "Int64-value64", "Int64-ranged64",
+        "Bits", "BitsAfterEnd", "Int", "IntFull", "IntBounded", "Int64-value64", "Int64-ranged64",
         "Fixed-fixed32", "Fixed-fixed64", "Fixed128-wide", "Int128-ranged128", "Int128-full128",
         "Bool", "Float", "Double", "CompressedFloat", "CompressedFloatPrecomputed",
         "Uint64", "Uint128-value128", "Bits64-raw", "Bytes", "String", "End-stream", "Align-stream",

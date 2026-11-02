@@ -5,7 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-/** Plants a fresh-refusal destination write in a private copy of the real reader. */
+/** Plants a destination write or a broken failure latch in a private reader copy. */
 public final class SentinelSabotage
 {
     private SentinelSabotage() {}
@@ -15,8 +15,18 @@ public final class SentinelSabotage
         if ( args.length != 3 ) throw new IllegalArgumentException( "source output control" );
         String method;
         String write;
+        boolean terminal = args[2].startsWith( "terminal-" );
         switch ( args[2] )
         {
+            case "terminal-int": method = "serializeInt"; write = ""; break;
+            case "terminal-int64": method = "serializeInt64"; write = ""; break;
+            case "terminal-int128": method = "serializeInt128"; write = ""; break;
+            case "terminal-fixed": method = "serializeFixed"; write = ""; break;
+            case "terminal-fixed128": method = "serializeFixed128"; write = ""; break;
+            case "terminal-align": method = "serializeAlign"; write = ""; break;
+            case "terminal-bytes": method = "serializeBytes"; write = ""; break;
+            case "terminal-end": method = "serializeEnd"; write = ""; break;
+            case "terminal-object": method = "serializeObject"; write = ""; break;
             case "bool": method = "serializeBool"; write = "value.value = false;"; break;
             case "bits": method = "serializeBits"; write = "value.value = ( value.value & 0xFFFF ) | 0x5A5A0000;"; break;
             case "bits64": method = "serializeBits64"; write = "value.value = ( value.value & 0xFFFFFFFFL ) | 0x5A5A5A5A00000000L;"; break;
@@ -33,11 +43,11 @@ public final class SentinelSabotage
         int end = text.indexOf( "    @Override", start + signature.length() );
         if ( end < 0 ) end = text.length();
         String body = text.substring( start, end );
-        String needle = "return fail( Refusal.PAST_END );";
+        String needle = terminal ? "if ( failed ) return false;" : "return fail( Refusal.PAST_END );";
         int at = body.indexOf( needle );
         FuzzCheck.check( at >= 0, "missing fresh-refusal sabotage site " + method );
         // Braces preserve single-line if semantics in the wide reader.
-        body = body.replace( needle, "{ " + write + " " + needle + " }" );
+        body = body.replace( needle, terminal ? "if ( failed ) return true;" : "{ " + write + " " + needle + " }" );
         Path out = Path.of( args[1] );
         Files.createDirectories( out.getParent() );
         Files.writeString( out, text.substring( 0, start ) + body + text.substring( end ), StandardCharsets.UTF_8 );
