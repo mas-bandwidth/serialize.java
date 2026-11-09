@@ -249,15 +249,6 @@ public final class SerializeUtil
     }
 
     /**
-     * Quantizes a float for the wire: the exact two-rounding float32
-     * arithmetic STANDARD.md pins. Java evaluates float expressions with
-     * strict IEEE-754 semantics and never contracts a multiply and add into
-     * a fused multiply-add on its own (Math.fma is opt-in and deliberately
-     * absent here), so each statement below is one float32 rounding.
-     * The integer clamp after the floor is normative (STANDARD.md, schema#109).
-     * Returns the wire code as an unsigned 32-bit value in an int.
-     */
-    /**
      * Is this a conforming compressed float declaration, the one
      * {@link #compressedFloatMaxIntegerValue} accepts without asserting?
      * {@code min < max}, {@code res > 0}, and both {@code delta = max - min}
@@ -305,6 +296,15 @@ public final class SerializeUtil
             && delta > 0.0f && delta - delta == 0.0f;
     }
 
+    /**
+     * Quantizes a float for the wire: the exact two-rounding float32
+     * arithmetic STANDARD.md pins. Java evaluates float expressions with
+     * strict IEEE-754 semantics and never contracts a multiply and add into
+     * a fused multiply-add on its own (Math.fma is opt-in and deliberately
+     * absent here), so each statement below is one float32 rounding.
+     * The integer clamp after the floor is normative (STANDARD.md, schema#109).
+     * Returns the wire code as an unsigned 32-bit value in an int.
+     */
     static int compressedFloatWriteCode( float value, float min, float delta, long maxIntegerValue )
     {
         // writing a non-finite value (NaN, +/-Inf) is write misuse (U9): asserted
@@ -353,14 +353,6 @@ public final class SerializeUtil
         float scaledValue = normalizedValue * delta;
         return scaledValue + min;
     }
-
-    /*
-        The whole-unit capacity checks of serialize_fixed: the reference reads
-        signedness off the storage type, which Java cannot express — the format
-        is read as signed exactly when min < 0, and the signedness never
-        reaches the wire: for the same bounds, signed and unsigned storage
-        produce identical bytes. Debug-assert material only.
-    */
 
     /**
      * Is this a conforming fixed point declaration? IMPLEMENTING.md U16:
@@ -437,6 +429,13 @@ public final class SerializeUtil
         return new String( utf8, 0, keep, java.nio.charset.StandardCharsets.UTF_8 );
     }
 
+    /*
+        The whole-unit capacity checks of serialize_fixed: the reference reads
+        signedness off the storage type, which Java cannot express — the format
+        is read as signed exactly when min < 0, and the signedness never
+        reaches the wire: for the same bounds, signed and unsigned storage
+        produce identical bytes. Debug-assert material only.
+    */
     static boolean fixedBoundsFit( int integerBits, long minUnits, long maxUnits )
     {
         if ( minUnits < 0 )
