@@ -462,6 +462,25 @@ final class UniformRulesTests
             check( !new MeasureStream().reject(), "measure reject is false" );
         } );
 
+        test( "U8: masked byte and short values round-trip through the unsigned helpers in both shapes", () -> {
+            byte b = (byte) 0x80;
+            short s = (short) 0x8000;
+
+            byte[] buffer = new byte[8];
+            WriteStream writer = new WriteStream( buffer, buffer.length );
+            check( writer.serializeUint8( new IntRef( b & 0xFF ) ), "write masked byte" );
+            check( writer.serializeUint16( new IntRef( s & 0xFFFF ) ), "write masked short" );
+            writer.flush();
+
+            IntRef readByte = new IntRef();
+            IntRef readShort = new IntRef();
+            ReadStream reader = new ReadStream( buffer, buffer.length );
+            check( reader.serializeUint8( readByte ), "read masked byte" );
+            check( reader.serializeUint16( readShort ), "read masked short" );
+            checkEqual( readByte.value, 0x80, "the masked byte round-trips" );
+            checkEqual( readShort.value, 0x8000, "the masked short round-trips" );
+        } );
+
         // ---- the write-misuse mechanism: asserts, the checked shape only ----
 
         if ( !assertionsEnabled() )
@@ -481,6 +500,13 @@ final class UniformRulesTests
             check( !fires( () -> new WriteStream( new byte[8], 8 ).serializeBits( new IntRef( 255 ), 8 ) ), "write bits(255, 8)" );
             check( !fires( () -> new MeasureStream().serializeBits( new IntRef( 255 ), 8 ) ), "measure bits(255, 8)" );
             check( !fires( () -> new MeasureStream().serializeUint16( new IntRef( 65535 ) ) ), "measure uint16(65535)" );
+        } );
+
+        test( "U8: a byte or short widened into IntRef is checked against its unsigned field", () -> {
+            check( fires( () -> new WriteStream( new byte[8], 8 ).serializeUint8( new IntRef( (byte) 0x80 ) ) ), "write uint8 (byte) 0x80" );
+            check( fires( () -> new MeasureStream().serializeUint8( new IntRef( (byte) 0x80 ) ) ), "measure uint8 (byte) 0x80" );
+            check( fires( () -> new WriteStream( new byte[8], 8 ).serializeUint16( new IntRef( (short) 0x8000 ) ) ), "write uint16 (short) 0x8000" );
+            check( fires( () -> new MeasureStream().serializeUint16( new IntRef( (short) 0x8000 ) ) ), "measure uint16 (short) 0x8000" );
         } );
 
         test( "U10: bytes check the room for the whole operation before writing any of it", () -> {
