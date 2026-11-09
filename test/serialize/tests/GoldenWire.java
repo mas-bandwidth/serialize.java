@@ -14,7 +14,7 @@ final class GoldenWire
 {
     private GoldenWire() {}
 
-    // serialize.h golden_wire_bytes at v2.0.0: 106 bytes, verbatim, and the
+    // serialize.h golden_wire_bytes at v2.1.1: 106 bytes, verbatim, and the
     // whole message STANDARD.md prints under "The whole message"
     static final byte[] GOLDEN_WIRE_BYTES = bytes(
         0x5D, 0xDA, 0xF7, 0xE6, 0xD5, 0x77, 0xDF, 0x56, 0xEF, 0x9F, 0x75, 0x19,
