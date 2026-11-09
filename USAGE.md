@@ -287,6 +287,22 @@ w.serializeUint128( new Ref<>( UInt128Value.fromUnsignedLong( 1 ).shiftLeft( 100
 w.serializeBool( new BoolRef( true ) );
 ```
 
+When the value starts as a Java `byte` or `short`, mask it before it
+goes into the `IntRef`. Both types are signed and widen with sign
+extension, so `(byte) 0x80` becomes `-128` and `(short) 0x8000` becomes
+`-32768`. Handed to `serializeUint8`, `serializeUint16` or
+`serializeBits`, that negative int is wider than the field: `-ea` traps
+it as write misuse, and without assertions the sign-extended high bits
+are written alongside it. Mask to the unsigned width first:
+
+```java
+byte b = (byte) 0x80;
+short s = (short) 0x8000;
+
+w.serializeUint8( new IntRef( b & 0xFF ) );    // 0x80, not 0xFFFFFF80
+w.serializeUint16( new IntRef( s & 0xFFFF ) ); // 0x8000, not 0xFFFF8000
+```
+
 **Unsigned-long discipline**: Java has no unsigned 64-bit type, so
 unsigned wire values ride bit-transparently in `long` — arithmetic wraps
 two's complement, which is exactly the unsigned-domain wrap the format's
