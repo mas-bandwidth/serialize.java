@@ -30,7 +30,7 @@ package is not yet published: there is no artifact on Maven Central under any
 coordinate, and there is no Maven or Gradle build here to produce one.
 Publishing it is a separate round.
 
-Seventeen files under `src/serialize/`, zero dependencies, Java 17 language
+Eighteen files under `src/serialize/`, zero dependencies, Java 17 language
 level. Take it either way:
 
 **Copy the package in** — drop `src/serialize/` into your own source tree and
@@ -89,7 +89,8 @@ primitive-specialized holder cells (`IntRef`, `LongRef`, `BoolRef`,
 - **Refusal reasons**: `ReadStream.getRefusal()` names the first
   refusal from the standard's closed list (`Refusal`, spelled
   `past_end`, `value_out_of_range`, `nonzero_padding`, `trailing_data`,
-  `non_finite_float`, `invalid_utf8`, `embedded_nul`, `non_canonical`).
+  `non_finite_float`, `invalid_utf8`, `embedded_nul`, `non_canonical`,
+  `rejected`).
 - **The relative integer**: `serializeIntRelative` — the flag ladder for
   strictly increasing sequences over the domain 0 to 2^31 - 1, one bit
   for a difference of 1, every tier's reconstruction checked on read,
