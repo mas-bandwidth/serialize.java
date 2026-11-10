@@ -153,8 +153,10 @@ public final class HostileReadFuzzer
 
         for ( int i = 0; i < NUM_OPS; i++ )
         {
-            final int select = ops[i] & 15;
+            final int nibble = ops[i] & 15;
             final int param = ( ops[i] >> 4 ) & 15;                 // [0,15]
+            // parameters 13..15 of the compressed-float operation are object and reject
+            final int select = ( nibble == 7 && param >= 13 ) ? 16 + ( param - 13 ) : nibble;
 
             switch ( select )
             {
@@ -266,16 +268,66 @@ public final class HostileReadFuzzer
 
                 case 7:
                 {
-                    // odd parameters drive the precomputed form with the same constants:
-                    // the two are wire identical, so they refuse and accept alike
+                    // three declarations. an odd parameter on the first keeps the
+                    // precomputed form, wire identical to that declaration. the wide
+                    // one is a small quantum whose step count clamps to 4294967040.
                     FloatRef value = new FloatRef( 1.5f );
-                    final boolean ok = ( param & 1 ) == 0
-                        ? stream.serializeCompressedFloat( value, -10.0f, +10.0f, 0.01f )
-                        : stream.serializeCompressedFloatPrecomputed( value, CF_PARAMS.maxIntegerValue, CF_PARAMS.bits, CF_PARAMS.delta, -10.0f );
+                    final int kind = param % 3;
+                    final boolean ok;
+                    if ( kind == 0 )
+                    {
+                        ok = ( param & 1 ) == 0
+                            ? stream.serializeCompressedFloat( value, -10.0f, +10.0f, 0.01f )
+                            : stream.serializeCompressedFloatPrecomputed( value, CF_PARAMS.maxIntegerValue, CF_PARAMS.bits, CF_PARAMS.delta, -10.0f );
+                    }
+                    else if ( kind == 1 )
+                    {
+                        ok = stream.serializeCompressedFloat( value, -100.0f, +100.0f, 0.01f );
+                    }
+                    else
+                    {
+                        ok = stream.serializeCompressedFloat( value, 0.0f, 1.0f, 1.0e-10f );
+                    }
                     if ( !ok ) return refused( stream, Float.floatToRawIntBits( value.value ) == Float.floatToRawIntBits( 1.5f ) );
                     accepted( stream );
                     FuzzCheck.check( SerializeUtil.floatBitsAreFinite( Float.floatToRawIntBits( value.value ) ), "compressed_float: accepted a non-finite value" );
                     trace.add( Float.floatToRawIntBits( value.value ) );
+                }
+                break;
+
+                case 16:
+                {
+                    IntRef value = new IntRef( SENTINEL );
+                    if ( !stream.serializeObject( s -> s.serializeInt( value, -100, +100 ) ) ) return refused( stream, value.value == SENTINEL );
+                    accepted( stream );
+                    FuzzCheck.check( value.value >= -100 && value.value <= +100, "object: value outside [-100,+100]" );
+                    trace.add( value.value );
+                }
+                break;
+
+                case 17:
+                {
+                    final long before = stream.getBitsProcessed();
+                    if ( !stream.serializeObject( s -> false ) )
+                    {
+                        FuzzCheck.check( stream.getRefusal() == Refusal.REJECTED, "object: a callback refusal was not rejected" );
+                        FuzzCheck.check( stream.getBitsProcessed() == before, "object: a callback refusal moved bits" );
+                        return refused( stream, true );
+                    }
+                    FuzzCheck.check( false, "object: a refusing callback was accepted" );
+                }
+                break;
+
+                case 18:
+                {
+                    final long before = stream.getBitsProcessed();
+                    if ( !stream.reject() )
+                    {
+                        FuzzCheck.check( stream.getRefusal() == Refusal.REJECTED, "reject: not rejected" );
+                        FuzzCheck.check( stream.getBitsProcessed() == before, "reject: consumed bits" );
+                        return refused( stream, true );
+                    }
+                    FuzzCheck.check( false, "reject: returned true" );
                 }
                 break;
 
