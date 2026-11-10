@@ -317,17 +317,16 @@ final class UniformRulesTests
             }
         } );
 
-        test( "U9 U15: copyString with destSize below 1, or a lone surrogate, is write misuse (asserted under -ea)", () -> {
-            if ( !assertionsEnabled() )
-            {
-                return;
-            }
-            check( fires( () -> SerializeUtil.copyString( "abc", 0 ) ), "destSize 0" );
-            check( fires( () -> SerializeUtil.copyString( "abc", -1 ) ), "destSize -1" );
-            check( fires( () -> SerializeUtil.copyString( "a\uD800", 8 ) ), "a lone high surrogate" );
-            check( fires( () -> SerializeUtil.copyString( "\uDC00b", 8 ) ), "a lone low surrogate" );
-            check( !fires( () -> SerializeUtil.copyString( "a😀", 8 ) ), "witness: a surrogate pair" );
-        } );
+        if ( assertionsEnabled() )
+        {
+            test( "U9 U15: copyString with destSize below 1, or a lone surrogate, is write misuse (asserted under -ea)", () -> {
+                check( fires( () -> SerializeUtil.copyString( "abc", 0 ) ), "destSize 0" );
+                check( fires( () -> SerializeUtil.copyString( "abc", -1 ) ), "destSize -1" );
+                check( fires( () -> SerializeUtil.copyString( "a\uD800", 8 ) ), "a lone high surrogate" );
+                check( fires( () -> SerializeUtil.copyString( "\uDC00b", 8 ) ), "a lone low surrogate" );
+                check( !fires( () -> SerializeUtil.copyString( "a😀", 8 ) ), "witness: a surrogate pair" );
+            } );
+        }
 
         test( "U12: end on a write or measure stream is a no-op returning true", () -> {
             WriteStream writer = new WriteStream( new byte[8], 8 );
@@ -457,14 +456,13 @@ final class UniformRulesTests
             check( value.value == 10.0f, "and decodes to max" );
         } );
 
-        test( "U9: reject on a write or measure returns false and never throws in the release shape", () -> {
-            if ( assertionsEnabled() )
-            {
-                return;                         // the checked shape asserts it: see the U9 checked test
-            }
-            check( !new WriteStream( new byte[8], 8 ).reject(), "write reject is false" );
-            check( !new MeasureStream().reject(), "measure reject is false" );
-        } );
+        if ( !assertionsEnabled() )
+        {
+            test( "U9: reject on a write or measure returns false and never throws in the release shape", () -> {
+                check( !new WriteStream( new byte[8], 8 ).reject(), "write reject is false" );
+                check( !new MeasureStream().reject(), "measure reject is false" );
+            } );
+        }
 
         test( "U8: masked byte and short values round-trip through the unsigned helpers in both shapes", () -> {
             byte b = (byte) 0x80;
