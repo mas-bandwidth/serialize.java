@@ -607,9 +607,15 @@ br.readBytes( out, 3 );                           // out is now { 1, 2, 3 }
 
 The reader carries the same allocation contract as `ReadStream`: any
 array of at least the data, 8 bytes of slack past it for the fast path.
-`BitReader` and `BitWriter` are the raw engine: their contracts are
-asserted under `-ea` only, and a misused one may throw. The refusals of
-U7 belong to `ReadStream`.
+`BitReader` and `BitWriter` are the raw engine: their precondition checks
+— the bit count in `[1,32]`, a value that fits its field, buffer capacity,
+and byte alignment — are Java `assert` statements, so they exist only
+under `-ea`. With `-ea`, a misuse throws `AssertionError` at the call.
+With `-da`, those asserts are skipped: misuse is unchecked, and may
+silently truncate a value, corrupt the packed bits, read or write past
+the logical end of the data, or throw an ordinary runtime exception, but
+never an `AssertionError`. `flushBits` is stateless and idempotent, so a
+write after it is not misuse. The refusals of U7 belong to `ReadStream`.
 
 ## Wire compatibility
 

@@ -11,6 +11,8 @@ final class BitpackerTests
 {
     private BitpackerTests() {}
 
+    private static final boolean ASSERTIONS_ENABLED = Harness.assertionsEnabled();
+
     static void run()
     {
         test( "bitpacker: write then read the reference value sequence", () -> {
@@ -197,6 +199,76 @@ final class BitpackerTests
             checkEqual( reader.readBits( 1 ), 1, "bit" );
             check( !reader.readAlign(), "non-zero padding refused" );
         } );
+
+        // The bitpacker contracts are asserts, so they exist only in the checked shape.
+        if ( ASSERTIONS_ENABLED )
+        {
+            test( "bitpacker: writeBits asserts on a bit count outside [1,32]", () -> {
+                byte[] buffer = new byte[16];
+                check( Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( 0, 0 ) ), "bits 0" );
+                check( Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( 0, 33 ) ), "bits 33" );
+                check( Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( 0, -1 ) ), "bits -1" );
+                check( !Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( 0, 1 ) ), "witness: bits 1" );
+                check( !Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( 0, 32 ) ), "witness: bits 32" );
+            } );
+
+            test( "bitpacker: writeBits asserts on a value wider than its field", () -> {
+                byte[] buffer = new byte[16];
+                check( Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( 8, 3 ) ), "8 in 3 bits" );
+                check( Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( 256, 8 ) ), "256 in 8 bits" );
+                check( Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( -1, 31 ) ), "0xFFFFFFFF in 31 bits" );
+                check( !Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( 7, 3 ) ), "witness: 7 in 3 bits" );
+                check( !Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( -1, 32 ) ), "witness: every 32-bit value fits 32 bits" );
+            } );
+
+            test( "bitpacker: BitWriter asserts when a write would overflow the buffer", () -> {
+                byte[] buffer = new byte[8];
+                BitWriter writer = new BitWriter( buffer, 8 );
+                writer.writeBits( 0, 32 );
+                writer.writeBits( 0, 32 );
+                writer.flushBits();
+                check( Harness.fires( () -> writer.writeBits( 0, 1 ) ), "one bit past the buffer after a flush" );
+                check( Harness.fires( () -> writer.writeBytes( new byte[1], 1 ) ), "one byte past the buffer after a flush" );
+                check( !Harness.fires( () -> new BitWriter( buffer, 8 ).writeBytes( new byte[8], 8 ) ), "witness: a full buffer fits" );
+                check( Harness.fires( () -> new BitWriter( new byte[8], 16 ) ), "a capacity larger than the array" );
+                check( Harness.fires( () -> new BitWriter( new byte[8], 7 ) ), "a capacity that is not a multiple of 8" );
+            } );
+
+            test( "bitpacker: flushBits is stateless, so writing after it stays legal", () -> {
+                byte[] buffer = new byte[16];
+                BitWriter writer = new BitWriter( buffer, 16 );
+                writer.writeBits( 0x5, 3 );
+                writer.flushBits();
+                writer.flushBits();
+                check( !Harness.fires( () -> writer.writeBits( 0x3, 2 ) ), "a write after flush is legal" );
+                writer.flushBits();
+
+                BitReader reader = new BitReader( buffer, (int) writer.getBytesWritten() );
+                checkEqual( reader.readBits( 3 ), 0x5, "bits before the flush" );
+                checkEqual( reader.readBits( 2 ), 0x3, "bits after the flush" );
+            } );
+
+            test( "bitpacker: readBits asserts on a bit count outside [1,32]", () -> {
+                byte[] buffer = new byte[16];
+                check( Harness.fires( () -> new BitReader( buffer, 16 ).readBits( 0 ) ), "bits 0" );
+                check( Harness.fires( () -> new BitReader( buffer, 16 ).readBits( 33 ) ), "bits 33" );
+                check( Harness.fires( () -> new BitReader( buffer, 16 ).readBits( -1 ) ), "bits -1" );
+                check( !Harness.fires( () -> new BitReader( buffer, 16 ).readBits( 1 ) ), "witness: bits 1" );
+                check( !Harness.fires( () -> new BitReader( buffer, 16 ).readBits( 32 ) ), "witness: bits 32" );
+            } );
+
+            test( "bitpacker: BitReader asserts when a read would pass the end of the data", () -> {
+                byte[] buffer = new byte[8];
+                BitReader reader = new BitReader( buffer, 8 );
+                checkEqual( reader.readBits( 32 ), 0, "first word" );
+                checkEqual( reader.readBits( 32 ), 0, "second word" );
+                check( Harness.fires( () -> reader.readBits( 1 ) ), "one bit past the data" );
+                check( Harness.fires( () -> reader.readBytes( new byte[1], 1 ) ), "one byte past the data" );
+                check( !Harness.fires( () -> new BitReader( buffer, 8 ).readBytes( new byte[8], 8 ) ), "witness: the whole buffer reads" );
+                check( Harness.fires( () -> new BitReader( new byte[8], 16 ) ), "a data size larger than the array" );
+                check( Harness.fires( () -> new BitReader( new byte[8], -1 ) ), "a negative data size" );
+            } );
+        }
 
         test( "bitsRequired: the reference table", () -> {
             checkEqual( SerializeUtil.bitsRequired( 0, 0 ), 0, "0,0" );
