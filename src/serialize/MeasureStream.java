@@ -172,9 +172,9 @@ public final class MeasureStream implements BitStream
 
     private static boolean checkBytes( byte[] data, int bytes )
     {
-        assert data != null;
+        assert data != null || bytes == 0;
         assert bytes >= 0;
-        assert bytes <= data.length;
+        assert data == null ? bytes == 0 : bytes <= data.length;
         return true;
     }
 

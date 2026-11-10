@@ -319,9 +319,9 @@ public final class WriteStream implements BitStream
 
     private boolean checkBytes( byte[] data, int bytes )
     {
-        assert data != null;
+        assert data != null || bytes == 0;
         assert bytes >= 0;
-        assert bytes <= data.length;
+        assert data == null ? bytes == 0 : bytes <= data.length;
         // U10: the room for the whole operation, align and payload, before any bit
         assert writer.getBitsAvailable() >= writer.getAlignBits() + (long) bytes * 8;
         return true;

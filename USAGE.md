@@ -106,14 +106,19 @@ everything, because the wire is a trust boundary.
 
 On the read side, every failure — a truncated read, a value outside its
 range, nonzero alignment padding, a non-finite float, a malformed string,
-bytes after the end — returns `false`, and hostile bytes never throw.
+bytes after the end — returns `false`, and hostile wire bytes never throw.
 
-**A reader never traps, on the caller's misuse either** (IMPLEMENTING.md
-U7, U16). A declaration that cannot be right is refused as
-`value_out_of_range` before any bits move, in every build, with or
-without `-ea`: a bit count outside `[1,32]` (`[1,64]` for `serializeBits64`),
-`min > max` on a ranged read, a string `bufferSize` below 1, a `bytes`
-count larger than the destination array (or a `null` one), an
+**A reader never traps on hostile wire data or on a bad value or
+declaration** (IMPLEMENTING.md U7, U16): that guarantee covers the wire
+and the value/declaration bounds below. Passing a `null` reference holder
+(`IntRef`, `LongRef`, `Ref`, and the other holder types) or a `null`
+`Serializer` object is the caller's misuse outside the guarantee and
+throws `NullPointerException`; it is not a refusal. A declaration that
+cannot be right is refused as `value_out_of_range` before any bits move,
+in every build, with or without `-ea`: a bit count outside `[1,32]`
+(`[1,64]` for `serializeBits64`), `min > max` on a ranged read, a string
+`bufferSize` below 1, a `bytes` count larger than the destination array
+(a `null` destination is accepted only when the count is zero), an
 `int_relative` `previous` below 0, a fixed point declaration that does not
 fit its Q format, a compressed float declaration that is not conforming,
 and precomputed compressed float constants that cannot be right. The
