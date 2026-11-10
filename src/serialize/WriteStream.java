@@ -549,6 +549,8 @@ public final class WriteStream implements BitStream
      * Flush the last scratch word to memory. Required: the buffer's contents
      * are unspecified until it is called (IMPLEMENTING.md U11), so call it
      * after the final operation and before reading, sending or copying the data.
+     * A flush that stores a partial word ends the write: a write after it is
+     * write misuse, asserted under {@code -ea}, until {@link #reset}.
      */
     public void flush()
     {

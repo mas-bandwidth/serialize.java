@@ -59,7 +59,9 @@ serializePlayer( measure, player );                // -> true
 `WriteStream` needs a buffer whose size is a multiple of 8 (the writer
 stores qwords to memory; asserted under `-ea`, U1); the packet to send is the first
 `getBytesProcessed()` bytes. **Flush is required**: the buffer's contents are
-unspecified until `flush()` is called after the last operation (U11). `MeasureStream` touches no memory at all —
+unspecified until `flush()` is called after the last operation, and a
+write after a flush that stored a partial word is write misuse, asserted
+under `-ea` (U11). `MeasureStream` touches no memory at all —
 it prices a message so you can size buffers; its bound is conservative
 (see [Measuring](#measuring)).
 
@@ -614,13 +616,15 @@ The reader carries the same allocation contract as `ReadStream`: any
 array of at least the data, 8 bytes of slack past it for the fast path.
 `BitReader` and `BitWriter` are the raw engine: their precondition checks
 — the bit count in `[1,32]`, a value that fits its field, buffer capacity,
-and byte alignment — are Java `assert` statements, so they exist only
+byte alignment, and no write after a flush that stored a partial word
+(U11) — are Java `assert` statements, so they exist only
 under `-ea`. With `-ea`, a misuse throws `AssertionError` at the call.
 With `-da`, those asserts are skipped: misuse is unchecked, and may
 silently truncate a value, corrupt the packed bits, read or write past
 the logical end of the data, or throw an ordinary runtime exception, but
-never an `AssertionError`. `flushBits` is stateless and idempotent, so a
-write after it is not misuse. The refusals of U7 belong to `ReadStream`.
+never an `AssertionError`. `flushBits` is idempotent, and ends the write
+when it stores a partial word; `reset` starts a new one. The refusals of
+U7 belong to `ReadStream`.
 
 ## Wire compatibility
 
