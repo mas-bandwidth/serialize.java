@@ -51,6 +51,12 @@ public final class ReadStream implements BitStream
         .onMalformedInput( CodingErrorAction.REPORT )
         .onUnmappableCharacter( CodingErrorAction.REPORT );
 
+    /** The string length cell, reused across reads: the type has a Ref-typed length argument. */
+    private final IntRef stringLength = new IntRef();
+
+    /** The string payload scratch, grown on demand and reused across reads. */
+    private byte[] stringScratch = EMPTY;
+
     /**
      * @param buffer the buffer to read from. Any array size works; at least
      *        8 bytes of slack past {@code bytes} is fastest. See {@link BitReader}.
@@ -525,7 +531,7 @@ public final class ReadStream implements BitStream
             return fail( Refusal.VALUE_OUT_OF_RANGE );
         }
         // the length, over [0, bufferSize-1]
-        IntRef length = new IntRef();
+        IntRef length = stringLength;
         if ( !serializeInt( length, 0, bufferSize - 1 ) )
         {
             return false;                   // the length latched its own reason
@@ -533,7 +539,7 @@ public final class ReadStream implements BitStream
         // the bytes, which align: the align first, so set padding is refused as
         // nonzero_padding even when the payload would also run past the end,
         // then the length is priced against the stream BEFORE the payload
-        // buffer is allocated, so a short hostile stream cannot force an
+        // buffer is grown, so a short hostile stream cannot force an
         // allocation of up to bufferSize bytes
         if ( !serializeAlign() )
         {
@@ -543,7 +549,11 @@ public final class ReadStream implements BitStream
         {
             return fail( Refusal.PAST_END );
         }
-        byte[] utf8 = new byte[length.value];
+        if ( stringScratch.length < length.value )
+        {
+            stringScratch = new byte[length.value];
+        }
+        byte[] utf8 = stringScratch;
         if ( !serializeBytes( utf8, length.value ) )
         {
             return false;                   // the bytes latched their own reason
@@ -570,7 +580,7 @@ public final class ReadStream implements BitStream
         String decoded;
         try
         {
-            decoded = utf8Decoder.reset().decode( ByteBuffer.wrap( utf8 ) ).toString();
+            decoded = utf8Decoder.reset().decode( ByteBuffer.wrap( utf8, 0, length.value ) ).toString();
         }
         catch ( CharacterCodingException error )
         {

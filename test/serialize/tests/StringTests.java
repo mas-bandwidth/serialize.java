@@ -193,6 +193,93 @@ final class StringTests
             }
         } );
 
+        test( "string: measure, write and read agree at every UTF-8 width", () -> {
+            String[] values = {
+                "",                                                     // no bytes
+                "ASCII",                                                // 1-byte code points
+                "\u007F",                                               // last 1-byte code point
+                "\u0080",                                               // first 2-byte code point
+                "\u07FF",                                               // last 2-byte code point
+                "\u0800",                                               // first 3-byte code point
+                "\uFFFF",                                               // last 3-byte code point
+                new String( Character.toChars( 0x10000 ) ),             // first 4-byte code point
+                new String( Character.toChars( 0x10FFFF ) ),            // last 4-byte code point
+                "h\u00E9\u20AC" + new String( Character.toChars( 0x1F600 ) ), // all widths together
+            };
+            // one reused reader, so its growable scratch crosses small and large payloads
+            ReadStream reader = new ReadStream( new byte[64], 0 );
+            for ( String value : values )
+            {
+                byte[] expected = value.getBytes( java.nio.charset.StandardCharsets.UTF_8 );
+                byte[] buffer = new byte[64];
+                WriteStream writer = new WriteStream( buffer, 64 );
+                check( writer.serializeString( new Ref<>( value ), BUFFER_SIZE ) );
+                writer.flush();
+                checkEqual( writer.getBytesProcessed(), 1 + expected.length, "the writer emits the encoded length" );
+
+                MeasureStream measure = new MeasureStream();
+                check( measure.serializeString( new Ref<>( value ), BUFFER_SIZE ) );
+                // the length field, the measure's worst-case align, then the bytes
+                checkEqual( measure.getBitsProcessed(), 4 + 7 + (long) expected.length * 8,
+                            "the measure counts the encoded length" );
+
+                reader.reset( buffer, (int) writer.getBytesProcessed() );
+                Ref<String> readBack = new Ref<>( "" );
+                check( reader.serializeString( readBack, BUFFER_SIZE ), "the reader accepts" );
+                checkEqual( readBack.value, value, "the reader restores the string" );
+            }
+        } );
+
+        test( "string: unpaired surrogates are refused by both writing streams", () -> {
+            String[] unpaired = {
+                new String( new char[] { 0xD83D } ),             // lone high
+                new String( new char[] { 0xDE00 } ),             // lone low
+                new String( new char[] { 'a', 0xD83D } ),        // high at the end
+                new String( new char[] { 'a', 0xDE00 } ),        // low at the end
+                new String( new char[] { 0xD83D, 'a' } ),        // high without its pair
+                new String( new char[] { 0xDE00, 'a' } ),        // low without a high before it
+            };
+            if ( Harness.assertionsEnabled() )
+            {
+                for ( String value : unpaired )
+                {
+                    check( Harness.fires( () -> new WriteStream( new byte[40], 32 ).serializeString( new Ref<>( value ), BUFFER_SIZE ) ),
+                           "the write stream asserts" );
+                    check( Harness.fires( () -> new MeasureStream().serializeString( new Ref<>( value ), BUFFER_SIZE ) ),
+                           "the measure stream asserts" );
+                }
+            }
+            else
+            {
+                // release shape: the encoder replaces each unpaired surrogate
+                // with one byte, and the measure, the writer and the reader
+                // all agree on the replacement
+                for ( String value : unpaired )
+                {
+                    byte[] expected = value.getBytes( java.nio.charset.StandardCharsets.UTF_8 );
+                    byte[] buffer = new byte[64];
+                    WriteStream writer = new WriteStream( buffer, 64 );
+                    check( writer.serializeString( new Ref<>( value ), BUFFER_SIZE ) );
+                    writer.flush();
+                    checkEqual( writer.getBytesProcessed(), 1 + expected.length,
+                                "the writer emits the replacement length" );
+                    Harness.checkBytesEqual( buffer, stringStream( expected ), 1 + expected.length,
+                                             "the writer emits the replacement bytes" );
+
+                    MeasureStream measure = new MeasureStream();
+                    check( measure.serializeString( new Ref<>( value ), BUFFER_SIZE ) );
+                    checkEqual( measure.getBitsProcessed(), 4 + 7 + (long) expected.length * 8,
+                                "the measure matches the writer's replacement length" );
+
+                    ReadStream reader = new ReadStream( buffer, (int) writer.getBytesProcessed() );
+                    Ref<String> readBack = new Ref<>( "" );
+                    check( reader.serializeString( readBack, BUFFER_SIZE ), "the reader accepts the replacement" );
+                    checkEqual( readBack.value, new String( expected, java.nio.charset.StandardCharsets.UTF_8 ),
+                                "the reader restores the replacement text" );
+                }
+            }
+        } );
+
         // the writer's contract is an assert, so it exists only in the checked shape
         if ( Harness.assertionsEnabled() )
         {
