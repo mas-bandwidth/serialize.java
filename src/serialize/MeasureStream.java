@@ -1,7 +1,5 @@
 package serialize;
 
-import java.nio.charset.StandardCharsets;
-
 /**
  * Stream class for computing a conservative bound on the size a message
  * would occupy, without producing bytes.
@@ -198,6 +196,43 @@ public final class MeasureStream implements BitStream
         return true;
     }
 
+    // the UTF-8 byte length of a String without a byte[] encode: one, two or
+    // three bytes per code unit, four for a surrogate pair. An unpaired
+    // surrogate counts as the one-byte replacement the encoder emits, so the
+    // measure matches the writer even outside the writing contract's asserts
+    private static int utf8Length( String string )
+    {
+        int bytes = 0;
+        int length = string.length();
+        for ( int i = 0; i < length; i++ )
+        {
+            char character = string.charAt( i );
+            if ( character < 0x80 )
+            {
+                bytes += 1;
+            }
+            else if ( character < 0x800 )
+            {
+                bytes += 2;
+            }
+            else if ( Character.isHighSurrogate( character ) && i + 1 < length
+                      && Character.isLowSurrogate( string.charAt( i + 1 ) ) )
+            {
+                bytes += 4;
+                i += 1;
+            }
+            else if ( Character.isSurrogate( character ) )
+            {
+                bytes += 1;                 // the encoder's replacement for an unpaired surrogate
+            }
+            else
+            {
+                bytes += 3;
+            }
+        }
+        return bytes;
+    }
+
     @Override
     public boolean serializeString( Ref<String> value, int bufferSize )
     {
@@ -205,8 +240,7 @@ public final class MeasureStream implements BitStream
         assert string != null;
         assert SerializeUtil.isValidUtf16( string );
         assert SerializeUtil.hasNoInteriorNul( string );
-        byte[] utf8 = string.getBytes( StandardCharsets.UTF_8 );
-        int length = utf8.length;
+        int length = utf8Length( string );
         assert bufferSize >= 1;
         assert length < bufferSize;
         bitsWritten += SerializeUtil.bitsRequired( 0, bufferSize - 1 );
