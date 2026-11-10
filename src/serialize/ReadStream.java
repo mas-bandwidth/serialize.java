@@ -11,8 +11,12 @@ import java.nio.charset.StandardCharsets;
  * {@link BitReader} presenting the unified {@link BitStream} interface.
  *
  * The read side faces untrusted data: every refusal rule of STANDARD.md
- * binds here in every build mode. Out-of-range or truncated input returns
- * false; hostile bytes never throw.
+ * binds here in every build mode. Out-of-range or truncated wire data
+ * returns false; hostile bytes never throw. That no-trap guarantee covers
+ * the wire and the value/declaration bounds. Passing a null reference
+ * holder (an {@link IntRef}, a {@link Ref}, and the other holder types) or
+ * a null {@link Serializer} object is the caller's misuse outside the
+ * guarantee and throws {@link NullPointerException}.
  *
  * A refused read leaves its scalar destination unwritten — the holder cell
  * holds what it held before the call — except for a caller-owned buffer,
@@ -477,8 +481,10 @@ public final class ReadStream implements BitStream
     {
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
         // U7 and U16: a negative count, or a destination without the capacity
-        // for it, is the caller's misuse, refused before any bits move
-        if ( data == null || bytes < 0 || bytes > data.length )
+        // for it, is the caller's misuse, refused before any bits move. A null
+        // destination is a valid no-op only when the count is zero, matching
+        // the reference's acceptance of (nullptr, 0).
+        if ( bytes < 0 || ( data == null ? bytes != 0 : bytes > data.length ) )
         {
             return fail( Refusal.VALUE_OUT_OF_RANGE );
         }

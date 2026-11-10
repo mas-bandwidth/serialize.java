@@ -123,7 +123,7 @@ public final class BitWriter
      */
     public void writeBytes( byte[] source, int bytes )
     {
-        assert checkWriteBytes( bytes );
+        assert checkWriteBytes( source, bytes );
 
         // the head: the partial scratch word goes to the buffer whole — its high
         // bytes are zero, and the payload copy below overwrites exactly those.
@@ -132,8 +132,13 @@ public final class BitWriter
             LONG_LE.set( data, (int) ( bitsWritten >>> 3 ) & ~7, scratch );
         }
 
-        // the body: the whole payload, straight in at the byte cursor
-        System.arraycopy( source, 0, data, (int) ( bitsWritten >> 3 ), bytes );
+        // the body: the whole payload, straight in at the byte cursor. A null
+        // source is a valid no-op only when the count is zero, so a zero-byte
+        // copy is skipped rather than handed to arraycopy.
+        if ( bytes > 0 )
+        {
+            System.arraycopy( source, 0, data, (int) ( bitsWritten >> 3 ), bytes );
+        }
 
         bitsWritten += (long) bytes * 8;
 
@@ -152,8 +157,9 @@ public final class BitWriter
         }
     }
 
-    private boolean checkWriteBytes( int bytes )
+    private boolean checkWriteBytes( byte[] source, int bytes )
     {
+        assert source != null || bytes == 0;
         assert bytes >= 0;
         assert bitsWritten + (long) bytes * 8 <= numBits;
         assert ( bitsWritten % 8 ) == 0;                        // byte aligned

@@ -151,15 +151,19 @@ public final class BitReader
     /** Read bytes from the bitpacked data. The bit index must be byte aligned. */
     public void readBytes( byte[] destination, int bytes )
     {
-        assert checkReadBytes( bytes );
+        assert checkReadBytes( destination, bytes );
 
-        System.arraycopy( data, (int) ( bitsRead >> 3 ), destination, 0, bytes );
+        if ( bytes > 0 )
+        {
+            System.arraycopy( data, (int) ( bitsRead >> 3 ), destination, 0, bytes );
+        }
 
         bitsRead += (long) bytes * 8;
     }
 
-    private boolean checkReadBytes( int bytes )
+    private boolean checkReadBytes( byte[] destination, int bytes )
     {
+        assert destination != null || bytes == 0;
         assert getAlignBits() == 0;
         assert bitsRead + (long) bytes * 8 <= numBits;
         return true;
