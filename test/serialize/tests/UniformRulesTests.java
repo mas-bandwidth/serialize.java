@@ -364,6 +364,31 @@ final class UniformRulesTests
             checkEqual( buffer[0] & 0xFF, 0xAB, "flush stores it" );
         } );
 
+        if ( assertionsEnabled() )
+        {
+            test( "U9 U11: a write after a flush that stored a partial word is write misuse on every write path", () -> {
+                java.util.function.Supplier<WriteStream> flushed = () -> {
+                    WriteStream writer = new WriteStream( new byte[32], 32 );
+                    writer.serializeBits( new IntRef( 0xAB ), 8 );
+                    writer.flush();
+                    return writer;
+                };
+                WriteStream bits = flushed.get();
+                check( fires( () -> bits.serializeBits( new IntRef( 0xCD ), 8 ) ), "bits" );
+                WriteStream bits64 = flushed.get();
+                check( fires( () -> bits64.serializeBits64( new LongRef( 0xCDL ), 40 ) ), "bits64" );
+                WriteStream int64 = flushed.get();
+                check( fires( () -> int64.serializeInt64( new LongRef( 5L ), 0L, 1L << 40 ) ), "int64" );
+                WriteStream bytes = flushed.get();
+                check( fires( () -> bytes.serializeBytes( new byte[2], 2 ) ), "bytes" );
+                WriteStream string = flushed.get();
+                check( fires( () -> string.serializeString( new Ref<>( "ab" ), 8 ) ), "string" );
+                WriteStream twice = flushed.get();
+                twice.flush();
+                check( !fires( twice::flush ), "witness: a second flush is not a write" );
+            } );
+        }
+
         // ---- U15: compressed_float_precomputed, wire identical to the unified form ----
 
         test( "U15: compressedFloatParams + the precomputed form match the unified form at every start offset", () -> {

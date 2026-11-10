@@ -234,18 +234,28 @@ final class BitpackerTests
                 check( Harness.fires( () -> new BitWriter( new byte[8], 7 ) ), "a capacity that is not a multiple of 8" );
             } );
 
-            test( "bitpacker: flushBits is stateless, so writing after it stays legal", () -> {
+            test( "bitpacker: a write after a flush that stored a partial word asserts (U11)", () -> {
                 byte[] buffer = new byte[16];
                 BitWriter writer = new BitWriter( buffer, 16 );
-                writer.writeBits( 0x5, 3 );
+                writer.writeBits( 0xAB, 8 );
                 writer.flushBits();
                 writer.flushBits();
-                check( !Harness.fires( () -> writer.writeBits( 0x3, 2 ) ), "a write after flush is legal" );
-                writer.flushBits();
+                check( Harness.fires( () -> writer.writeBits( 0xCD, 8 ) ), "writeBits after a partial flush" );
+                check( Harness.fires( () -> writer.writeBytes( new byte[1], 1 ) ), "writeBytes after a partial flush" );
+                check( Harness.fires( () -> writer.writeBytes( null, 0 ) ), "a zero-count writeBytes after a partial flush" );
+                BitWriter aligning = new BitWriter( new byte[16], 16 );
+                aligning.writeBits( 0x1, 3 );
+                aligning.flushBits();
+                check( Harness.fires( aligning::writeAlign ), "writeAlign after a partial flush" );
 
-                BitReader reader = new BitReader( buffer, (int) writer.getBytesWritten() );
-                checkEqual( reader.readBits( 3 ), 0x5, "bits before the flush" );
-                checkEqual( reader.readBits( 2 ), 0x3, "bits after the flush" );
+                // witnesses: a flush on a word boundary stores no partial word, and reset starts a new write
+                BitWriter boundary = new BitWriter( new byte[16], 16 );
+                boundary.writeBits( 0, 32 );
+                boundary.writeBits( 0, 32 );
+                boundary.flushBits();
+                check( !Harness.fires( () -> boundary.writeBits( 0x3, 2 ) ), "witness: a write after a flush on a word boundary" );
+                writer.reset( buffer, 16 );
+                check( !Harness.fires( () -> writer.writeBits( 0xCD, 8 ) ), "witness: a write after reset" );
             } );
 
             test( "bitpacker: readBits asserts on a bit count outside [1,32]", () -> {

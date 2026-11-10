@@ -266,6 +266,20 @@ final class StreamTests
             MeasureStream measure = new MeasureStream();
             check( measure.serializeBytes( null, 0 ), "null zero-count measure" );
 
+            // a zero-count block still aligns, as every bytes does, on all three streams
+            WriteStream alignWriter = new WriteStream( new byte[8], 8 );
+            check( alignWriter.serializeBits( new IntRef( 0x5 ), 3 ) );
+            check( alignWriter.serializeBytes( null, 0 ), "null zero-count write off a byte boundary" );
+            checkEqual( alignWriter.getBitsProcessed(), 8, "null zero-count write aligns" );
+            ReadStream alignReader = new ReadStream( new byte[8], 8 );
+            check( alignReader.serializeBits( new IntRef(), 3 ) );
+            check( alignReader.serializeBytes( null, 0 ), "null zero-count read off a byte boundary" );
+            checkEqual( alignReader.getBitsProcessed(), 8, "null zero-count read aligns" );
+            MeasureStream alignMeasure = new MeasureStream();
+            check( alignMeasure.serializeBits( new IntRef( 0x5 ), 3 ) );
+            check( alignMeasure.serializeBytes( null, 0 ), "null zero-count measure off a byte boundary" );
+            checkEqual( alignMeasure.getBitsProcessed(), 3 + 7, "null zero-count measure counts the worst-case align" );
+
             // the bitpacker primitives accept the same zero-byte no-op
             BitWriter bitWriter = new BitWriter( new byte[8], 8 );
             bitWriter.writeBytes( null, 0 );
