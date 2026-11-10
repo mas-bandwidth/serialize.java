@@ -203,6 +203,33 @@ public final class Controls
             read( "            return fail( Refusal.REJECTED );",
                   "            return failed && fail( Refusal.REJECTED );" + DELETED ) ),
 
+        // The runner probes every refused vector with an object read, so an
+        // unconditional deletion of the entry latch would fail every refusal
+        // vector, not the ones the vendored list names. This reader keeps the
+        // latch for the first object read on a failed stream and deletes it
+        // once an object read has already happened: exactly the vectors whose
+        // own steps depend on it.
+        new Control( "object-terminal", "a nested object on a failed stream refuses before its callback runs",
+            read( "    private boolean failed;",
+                  "    private boolean failed;\n"
+                + "\n"
+                + "    // NEGATIVE CONTROL: counts object reads so the deleted latch is scoped\n"
+                + "    private int objectReads;" ),
+            read( "        failed = false;\n"
+                + "        refusal = Refusal.NONE;",
+                  "        failed = false;\n"
+                + "        refusal = Refusal.NONE;\n"
+                + "        objectReads = 0;" ),
+            read( "    public boolean serializeObject( Serializer object )\n"
+                + "    {\n"
+                + "        if ( failed ) return false;         // the latch: a failed stream refuses everything after\n"
+                + "        if ( !object.serialize( this ) )",
+                  "    public boolean serializeObject( Serializer object )\n"
+                + "    {\n"
+                + "        objectReads++;\n"
+                + "        if ( failed && objectReads == 1 ) return false; // NEGATIVE CONTROL: the latch is gone after one object read\n"
+                + "        if ( !object.serialize( this ) )" ) ),
+
         // the caller's reject entry point returns false and latches nothing
         new Control( "reject-reason", "reject refuses as rejected",
             read( "    public boolean reject()\n"
@@ -235,6 +262,20 @@ public final class Controls
         }
 
         List<Path> corpus = corpusFiles();
+        List<String> registered = new ArrayList<>();
+        for ( Control control : CONTROLS )
+        {
+            registered.add( control.name );
+        }
+        for ( Path expected : expectedFiles() )
+        {
+            String file = expected.getFileName().toString();
+            String name = file.substring( 0, file.length() - ".expected".length() );
+            if ( !registered.contains( name ) )
+            {
+                failures.add( name + ": " + expected + " names a rule no Control registers, so nothing holds it to the corpus" );
+            }
+        }
         for ( Control control : CONTROLS )
         {
             System.out.printf( "%ncontrol %s: %s%n", control.name, control.rule );
@@ -281,6 +322,20 @@ public final class Controls
     {
         List<Path> files = new ArrayList<>();
         try ( DirectoryStream<Path> entries = Files.newDirectoryStream( ConformanceTests.corpusDir(), "*.txt" ) )
+        {
+            for ( Path entry : entries )
+            {
+                files.add( entry );
+            }
+        }
+        files.sort( null );
+        return files;
+    }
+
+    private static List<Path> expectedFiles() throws IOException
+    {
+        List<Path> files = new ArrayList<>();
+        try ( DirectoryStream<Path> entries = Files.newDirectoryStream( ConformanceTests.controlsDir(), "*.expected" ) )
         {
             for ( Path entry : entries )
             {
