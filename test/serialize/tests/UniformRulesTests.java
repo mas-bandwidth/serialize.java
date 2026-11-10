@@ -9,8 +9,12 @@ import static serialize.tests.Harness.fires;
 import static serialize.tests.Harness.test;
 
 /**
- * IMPLEMENTING.md's uniform rules, U1 to U16, as this port keeps them, and the
- * 2026-10-27 audit's reproducers (audit/Repro.java R1 to R6), each a test.
+ * IMPLEMENTING.md's uniform rules, U1 to U16, as this port keeps them, each a
+ * test. The cases labelled R1 to R6 are read-side caller misuse that must
+ * refuse as value_out_of_range rather than trap (U7): a string or bytes count
+ * larger than its destination (R1, R2), a bit count out of range (R3), a
+ * ReadStream over more bytes than its array or a negative byte count (R4, R5),
+ * and a ranged read with min > max (R6).
  *
  * Every read-side test runs in both shapes and must hold in both: a reader
  * never traps (U7), so caller misuse on read refuses as value_out_of_range
