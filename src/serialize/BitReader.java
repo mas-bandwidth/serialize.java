@@ -20,6 +20,13 @@ import java.util.Arrays;
  * window: slack (or padding) bytes are loaded but never interpreted, because
  * bits past the end of the data cannot reach the output of a read, so they
  * can never influence a decoded value or an accept/reject decision.
+ *
+ * The caller's {@code byte[]} is retained directly, never copied, and every
+ * read draws from it. Do not modify that array between construction or
+ * {@link #reset} and the final read. On a tight array {@code reset} copies
+ * only the final bytes into the zero-padded tail window while reads elsewhere
+ * still read the live array, so a change made in between can surface as a mix
+ * of stale snapshot bytes and live bytes.
  */
 public final class BitReader
 {
@@ -52,9 +59,17 @@ public final class BitReader
      * 8 bytes of slack past the data, the final bytes are copied into the
      * zero-padded tail window so that every read has a whole window of
      * readable bytes beneath it.
+     *
+     * The buffer is retained directly, never copied, and the reader reads
+     * from it as it is. Do not modify it between this call and the final
+     * read: an array with less than 8 bytes of slack is snapshotted into the
+     * tail only here, so a later change would be seen by reads that still
+     * load from the live array but not by those that load from the tail,
+     * mixing stale and live bytes.
      * @param data the bitpacked data to read. Any array size works; at least
      *        8 bytes of slack past {@code bytes} is fastest — see the class
-     *        comment.
+     *        comment. The array is retained directly and must not be modified
+     *        until the final read.
      * @param bytes the number of bytes of bitpacked data to read.
      */
     public void reset( byte[] data, int bytes )

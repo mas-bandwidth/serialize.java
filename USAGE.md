@@ -81,6 +81,14 @@ packet out of the buffer it was written into, as above, has the slack
 for free; a packet arriving from a socket lands in an array 8 bytes
 longer than the largest packet to keep it.
 
+**The backing array is retained, never copied.** `ReadStream` (through
+`BitReader`) keeps the caller's `byte[]` directly and byte-aligned reads
+draw from it live; only a tight array's final bytes are snapshotted into
+the tail at construction or `reset`. Do not modify the array between
+construction/`reset` and the final read. A change made in between is seen
+by reads that load from the live array but not by those that load from
+the tail snapshot, so a decode can mix stale and live bytes.
+
 A byte count outside the array (negative, or past its length) is the
 caller's misuse: the stream refuses it at construction or `reset` as
 `value_out_of_range`, and every read on it refuses (IMPLEMENTING.md U7).
