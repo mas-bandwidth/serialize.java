@@ -19,6 +19,12 @@ specification in
 [mas-bandwidth/serialize](https://github.com/mas-bandwidth/serialize),
 which CI checks for drift — is the authority on every byte.
 
+If you would rather not write serialize functions by hand,
+[Schema](https://github.com/mas-bandwidth/schema) generates them for Java
+and many other languages from one definition of your data. The code it
+generates for Java carries its own bit reader and writer, so it does not
+need this library.
+
 Version 2.1.3 (`SerializeUtil.VERSION`), implementing format 2.0.
 
 If this library helps you, **[please support it](https://www.patreon.com/MasBandwidth/membership)**
