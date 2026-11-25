@@ -287,6 +287,24 @@ w.serializeUint128( new Ref<>( UInt128Value.fromUnsignedLong( 1 ).shiftLeft( 100
 w.serializeBool( new BoolRef( true ) );
 ```
 
+**Widening a Java `byte` or `short` into `IntRef`**: `byte` and `short`
+are signed, so a value such as `(byte) 0x80` widens to `0xFFFFFF80`
+(`-128`) — not `0x80`. Mask before the write:
+
+```java
+byte b = (byte) 0x80;
+short s = (short) 0x8000;
+w.serializeUint8( new IntRef( b & 0xFF ) );
+w.serializeUint16( new IntRef( s & 0xFFFF ) );
+w.serializeBits( new IntRef( b & 0xFF ), 8 );
+```
+
+Passing an unmasked negative value to `serializeUint8`, `serializeUint16`,
+or `serializeBits` is write misuse: under `-ea` it traps with
+`AssertionError` at the call, but with assertions disabled (the JVM
+default `-da`) the sign-extended value is written or ORed into the bit
+word, silently corrupting the stream.
+
 **Unsigned-long discipline**: Java has no unsigned 64-bit type, so
 unsigned wire values ride bit-transparently in `long` — arithmetic wraps
 two's complement, which is exactly the unsigned-domain wrap the format's

@@ -462,12 +462,33 @@ final class UniformRulesTests
             check( !new MeasureStream().reject(), "measure reject is false" );
         } );
 
+        test( "U8: a byte or short widened into IntRef is masked before the write and round-trips", () -> {
+            byte b = (byte) 0x80;
+            short s = (short) 0x8000;
+            byte[] buffer = new byte[8];
+            WriteStream writer = new WriteStream( buffer, 8 );
+            check( writer.serializeUint8( new IntRef( b & 0xFF ) ) );
+            check( writer.serializeUint16( new IntRef( s & 0xFFFF ) ) );
+            writer.flush();
+            ReadStream reader = new ReadStream( buffer, (int) writer.getBytesProcessed() );
+            IntRef small = new IntRef();
+            check( reader.serializeUint8( small ) );
+            checkEqual( small.value, 0x80, "uint8" );
+            check( reader.serializeUint16( small ) );
+            checkEqual( small.value, 0x8000, "uint16" );
+        } );
+
         // ---- the write-misuse mechanism: asserts, the checked shape only ----
 
         if ( !assertionsEnabled() )
         {
             return;
         }
+
+        test( "U8: an unmasked byte or short widened into IntRef traps in the checked shape", () -> {
+            check( fires( () -> new WriteStream( new byte[8], 8 ).serializeUint8( new IntRef( (byte) 0x80 ) ) ), "write uint8((byte) 0x80) unmasked traps" );
+            check( fires( () -> new WriteStream( new byte[8], 8 ).serializeUint16( new IntRef( (short) 0x8000 ) ) ), "write uint16((short) 0x8000) unmasked traps" );
+        } );
 
         test( "U8: a value wider than its width is caught on every writing stream, measure included", () -> {
             check( fires( () -> new WriteStream( new byte[8], 8 ).serializeBits( new IntRef( 256 ), 8 ) ), "write bits(256, 8)" );
