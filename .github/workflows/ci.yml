@@ -21,6 +21,7 @@ jobs:
       # reader with one refusal rule deleted fails exactly the vectors
       # conformance-controls/<rule>.expected names
       - run: make controls JDK_HOME="$JAVA_HOME"
+      - run: make fuzz-sentinel-controls JDK_HOME="$JAVA_HOME"
 
   # The coverage guided fuzz smoke, the reference's libFuzzer job in Java:
   # Jazzer (pinned, sha256 checked by the Makefile) drives the two targets in
