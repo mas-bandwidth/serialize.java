@@ -9,8 +9,12 @@ import static serialize.tests.Harness.fires;
 import static serialize.tests.Harness.test;
 
 /**
- * IMPLEMENTING.md's uniform rules, U1 to U16, as this port keeps them, and the
- * 2026-10-27 audit's reproducers (audit/Repro.java R1 to R6), each a test.
+ * IMPLEMENTING.md's uniform rules, U1 to U16, as this port keeps them, each a
+ * test. The cases labelled R1 to R6 are read-side caller misuse that must
+ * refuse as value_out_of_range rather than trap (U7): a string or bytes count
+ * larger than its destination (R1, R2), a bit count out of range (R3), a
+ * ReadStream over more bytes than its array or a negative byte count (R4, R5),
+ * and a ranged read with min > max (R6).
  *
  * Every read-side test runs in both shapes and must hold in both: a reader
  * never traps (U7), so caller misuse on read refuses as value_out_of_range
@@ -313,17 +317,16 @@ final class UniformRulesTests
             }
         } );
 
-        test( "U9 U15: copyString with destSize below 1, or a lone surrogate, is write misuse (asserted under -ea)", () -> {
-            if ( !assertionsEnabled() )
-            {
-                return;
-            }
-            check( fires( () -> SerializeUtil.copyString( "abc", 0 ) ), "destSize 0" );
-            check( fires( () -> SerializeUtil.copyString( "abc", -1 ) ), "destSize -1" );
-            check( fires( () -> SerializeUtil.copyString( "a\uD800", 8 ) ), "a lone high surrogate" );
-            check( fires( () -> SerializeUtil.copyString( "\uDC00b", 8 ) ), "a lone low surrogate" );
-            check( !fires( () -> SerializeUtil.copyString( "a😀", 8 ) ), "witness: a surrogate pair" );
-        } );
+        if ( assertionsEnabled() )
+        {
+            test( "U9 U15: copyString with destSize below 1, or a lone surrogate, is write misuse (asserted under -ea)", () -> {
+                check( fires( () -> SerializeUtil.copyString( "abc", 0 ) ), "destSize 0" );
+                check( fires( () -> SerializeUtil.copyString( "abc", -1 ) ), "destSize -1" );
+                check( fires( () -> SerializeUtil.copyString( "a\uD800", 8 ) ), "a lone high surrogate" );
+                check( fires( () -> SerializeUtil.copyString( "\uDC00b", 8 ) ), "a lone low surrogate" );
+                check( !fires( () -> SerializeUtil.copyString( "a😀", 8 ) ), "witness: a surrogate pair" );
+            } );
+        }
 
         test( "U12: end on a write or measure stream is a no-op returning true", () -> {
             WriteStream writer = new WriteStream( new byte[8], 8 );
@@ -360,6 +363,31 @@ final class UniformRulesTests
             writer.flush();
             checkEqual( buffer[0] & 0xFF, 0xAB, "flush stores it" );
         } );
+
+        if ( assertionsEnabled() )
+        {
+            test( "U9 U11: a write after a flush that stored a partial word is write misuse on every write path", () -> {
+                java.util.function.Supplier<WriteStream> flushed = () -> {
+                    WriteStream writer = new WriteStream( new byte[32], 32 );
+                    writer.serializeBits( new IntRef( 0xAB ), 8 );
+                    writer.flush();
+                    return writer;
+                };
+                WriteStream bits = flushed.get();
+                check( fires( () -> bits.serializeBits( new IntRef( 0xCD ), 8 ) ), "bits" );
+                WriteStream bits64 = flushed.get();
+                check( fires( () -> bits64.serializeBits64( new LongRef( 0xCDL ), 40 ) ), "bits64" );
+                WriteStream int64 = flushed.get();
+                check( fires( () -> int64.serializeInt64( new LongRef( 5L ), 0L, 1L << 40 ) ), "int64" );
+                WriteStream bytes = flushed.get();
+                check( fires( () -> bytes.serializeBytes( new byte[2], 2 ) ), "bytes" );
+                WriteStream string = flushed.get();
+                check( fires( () -> string.serializeString( new Ref<>( "ab" ), 8 ) ), "string" );
+                WriteStream twice = flushed.get();
+                twice.flush();
+                check( !fires( twice::flush ), "witness: a second flush is not a write" );
+            } );
+        }
 
         // ---- U15: compressed_float_precomputed, wire identical to the unified form ----
 
@@ -453,13 +481,31 @@ final class UniformRulesTests
             check( value.value == 10.0f, "and decodes to max" );
         } );
 
-        test( "U9: reject on a write or measure returns false and never throws in the release shape", () -> {
-            if ( assertionsEnabled() )
-            {
-                return;                         // the checked shape asserts it: see the U9 checked test
-            }
-            check( !new WriteStream( new byte[8], 8 ).reject(), "write reject is false" );
-            check( !new MeasureStream().reject(), "measure reject is false" );
+        if ( !assertionsEnabled() )
+        {
+            test( "U9: reject on a write or measure returns false and never throws in the release shape", () -> {
+                check( !new WriteStream( new byte[8], 8 ).reject(), "write reject is false" );
+                check( !new MeasureStream().reject(), "measure reject is false" );
+            } );
+        }
+
+        test( "U8: masked byte and short values round-trip through the unsigned helpers in both shapes", () -> {
+            byte b = (byte) 0x80;
+            short s = (short) 0x8000;
+
+            byte[] buffer = new byte[8];
+            WriteStream writer = new WriteStream( buffer, buffer.length );
+            check( writer.serializeUint8( new IntRef( b & 0xFF ) ), "write masked byte" );
+            check( writer.serializeUint16( new IntRef( s & 0xFFFF ) ), "write masked short" );
+            writer.flush();
+
+            IntRef readByte = new IntRef();
+            IntRef readShort = new IntRef();
+            ReadStream reader = new ReadStream( buffer, buffer.length );
+            check( reader.serializeUint8( readByte ), "read masked byte" );
+            check( reader.serializeUint16( readShort ), "read masked short" );
+            checkEqual( readByte.value, 0x80, "the masked byte round-trips" );
+            checkEqual( readShort.value, 0x8000, "the masked short round-trips" );
         } );
 
         // ---- the write-misuse mechanism: asserts, the checked shape only ----
@@ -481,6 +527,13 @@ final class UniformRulesTests
             check( !fires( () -> new WriteStream( new byte[8], 8 ).serializeBits( new IntRef( 255 ), 8 ) ), "write bits(255, 8)" );
             check( !fires( () -> new MeasureStream().serializeBits( new IntRef( 255 ), 8 ) ), "measure bits(255, 8)" );
             check( !fires( () -> new MeasureStream().serializeUint16( new IntRef( 65535 ) ) ), "measure uint16(65535)" );
+        } );
+
+        test( "U8: a byte or short widened into IntRef is checked against its unsigned field", () -> {
+            check( fires( () -> new WriteStream( new byte[8], 8 ).serializeUint8( new IntRef( (byte) 0x80 ) ) ), "write uint8 (byte) 0x80" );
+            check( fires( () -> new MeasureStream().serializeUint8( new IntRef( (byte) 0x80 ) ) ), "measure uint8 (byte) 0x80" );
+            check( fires( () -> new WriteStream( new byte[8], 8 ).serializeUint16( new IntRef( (short) 0x8000 ) ) ), "write uint16 (short) 0x8000" );
+            check( fires( () -> new MeasureStream().serializeUint16( new IntRef( (short) 0x8000 ) ) ), "measure uint16 (short) 0x8000" );
         } );
 
         test( "U10: bytes check the room for the whole operation before writing any of it", () -> {

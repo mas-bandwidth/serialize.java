@@ -11,6 +11,8 @@ final class BitpackerTests
 {
     private BitpackerTests() {}
 
+    private static final boolean ASSERTIONS_ENABLED = Harness.assertionsEnabled();
+
     static void run()
     {
         test( "bitpacker: write then read the reference value sequence", () -> {
@@ -94,6 +96,85 @@ final class BitpackerTests
             checkEqual( reader.readBits( 6 ), 0x3F, "tail after payload" );
         } );
 
+        test( "bitpacker: layout sweep over start offsets, bit widths and byte blocks", () -> {
+            final int bufferSize = 128;
+            final byte[] block = new byte[20];
+            for ( int startOffset = 0; startOffset <= 63; startOffset++ )
+            {
+                for ( int bitWidth = 1; bitWidth <= 32; bitWidth++ )
+                {
+                    for ( int blockLength = 0; blockLength <= 20; blockLength++ )
+                    {
+                        for ( int i = 0; i < blockLength; i++ )
+                        {
+                            block[i] = (byte) ( startOffset * 31 + bitWidth * 17 + blockLength * 7 + i * 13 );
+                        }
+
+                        int mask = bitWidth == 32 ? -1 : ( 1 << bitWidth ) - 1;
+                        int value = ( ( 0x9E3779B9 >>> ( 32 - bitWidth ) ) ^ ( startOffset * 0x01010101 ) ) & mask;
+                        int tail = ( value ^ 0x5A5A5A5A ) & mask;
+                        long prefix = 0x9E3779B97F4A7C15L ^ ( (long) startOffset * 0x0123456789ABCDEFL );
+
+                        byte[] buffer = new byte[bufferSize];
+                        BitWriter writer = new BitWriter( buffer, bufferSize );
+
+                        int prefixPosition = 0;
+                        while ( prefixPosition < startOffset )
+                        {
+                            int chunk = Math.min( 32, startOffset - prefixPosition );
+                            writer.writeBits( chunkValue( prefix, prefixPosition, chunk ), chunk );
+                            prefixPosition += chunk;
+                        }
+
+                        writer.writeBits( value, bitWidth );
+                        writer.writeAlign();
+                        writer.writeBytes( block, blockLength );
+                        writer.writeBits( tail, bitWidth );
+                        writer.flushBits();
+
+                        byte[] reference = new byte[bufferSize];
+                        int[] referenceBits = { 0 };
+                        for ( int bit = 0; bit < startOffset; bit++ )
+                        {
+                            referenceWriteBits( reference, referenceBits, (int) ( ( prefix >>> bit ) & 1L ), 1 );
+                        }
+                        referenceWriteBits( reference, referenceBits, value, bitWidth );
+                        while ( ( referenceBits[0] & 7 ) != 0 )
+                        {
+                            referenceWriteBits( reference, referenceBits, 0, 1 );
+                        }
+                        for ( int i = 0; i < blockLength; i++ )
+                        {
+                            referenceWriteBits( reference, referenceBits, block[i] & 0xFF, 8 );
+                        }
+                        referenceWriteBits( reference, referenceBits, tail, bitWidth );
+
+                        String layout = "start " + startOffset + ", width " + bitWidth + ", block " + blockLength;
+                        int wireBytes = (int) writer.getBytesWritten();
+                        checkEqual( wireBytes, ( referenceBits[0] + 7 ) / 8, "wire bytes for " + layout );
+                        checkEqual( writer.getBitsWritten(), referenceBits[0], "bits written for " + layout );
+                        Harness.checkBytesEqual( buffer, reference, wireBytes, "wire bytes for " + layout );
+
+                        BitReader reader = new BitReader( buffer, wireBytes );
+                        int position = 0;
+                        while ( position < startOffset )
+                        {
+                            int chunk = Math.min( 32, startOffset - position );
+                            checkEqual( reader.readBits( chunk ), chunkValue( prefix, position, chunk ), "prefix for " + layout );
+                            position += chunk;
+                        }
+                        checkEqual( reader.readBits( bitWidth ), value, "value for " + layout );
+                        check( reader.readAlign(), "align for " + layout );
+                        byte[] readBack = new byte[blockLength];
+                        reader.readBytes( readBack, blockLength );
+                        Harness.checkBytesEqual( readBack, block, blockLength, "block for " + layout );
+                        checkEqual( reader.readBits( bitWidth ), tail, "tail for " + layout );
+                        checkEqual( reader.getBitsRead(), referenceBits[0], "bits read for " + layout );
+                    }
+                }
+            }
+        } );
+
         test( "bitpacker: align pads zeros to the byte boundary and is a no-op when aligned", () -> {
             byte[] buffer = new byte[16];
             BitWriter writer = new BitWriter( buffer, 16 );
@@ -118,6 +199,86 @@ final class BitpackerTests
             checkEqual( reader.readBits( 1 ), 1, "bit" );
             check( !reader.readAlign(), "non-zero padding refused" );
         } );
+
+        // The bitpacker contracts are asserts, so they exist only in the checked shape.
+        if ( ASSERTIONS_ENABLED )
+        {
+            test( "bitpacker: writeBits asserts on a bit count outside [1,32]", () -> {
+                byte[] buffer = new byte[16];
+                check( Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( 0, 0 ) ), "bits 0" );
+                check( Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( 0, 33 ) ), "bits 33" );
+                check( Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( 0, -1 ) ), "bits -1" );
+                check( !Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( 0, 1 ) ), "witness: bits 1" );
+                check( !Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( 0, 32 ) ), "witness: bits 32" );
+            } );
+
+            test( "bitpacker: writeBits asserts on a value wider than its field", () -> {
+                byte[] buffer = new byte[16];
+                check( Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( 8, 3 ) ), "8 in 3 bits" );
+                check( Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( 256, 8 ) ), "256 in 8 bits" );
+                check( Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( -1, 31 ) ), "0xFFFFFFFF in 31 bits" );
+                check( !Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( 7, 3 ) ), "witness: 7 in 3 bits" );
+                check( !Harness.fires( () -> new BitWriter( buffer, 16 ).writeBits( -1, 32 ) ), "witness: every 32-bit value fits 32 bits" );
+            } );
+
+            test( "bitpacker: BitWriter asserts when a write would overflow the buffer", () -> {
+                byte[] buffer = new byte[8];
+                BitWriter writer = new BitWriter( buffer, 8 );
+                writer.writeBits( 0, 32 );
+                writer.writeBits( 0, 32 );
+                writer.flushBits();
+                check( Harness.fires( () -> writer.writeBits( 0, 1 ) ), "one bit past the buffer after a flush" );
+                check( Harness.fires( () -> writer.writeBytes( new byte[1], 1 ) ), "one byte past the buffer after a flush" );
+                check( !Harness.fires( () -> new BitWriter( buffer, 8 ).writeBytes( new byte[8], 8 ) ), "witness: a full buffer fits" );
+                check( Harness.fires( () -> new BitWriter( new byte[8], 16 ) ), "a capacity larger than the array" );
+                check( Harness.fires( () -> new BitWriter( new byte[8], 7 ) ), "a capacity that is not a multiple of 8" );
+            } );
+
+            test( "bitpacker: a write after a flush that stored a partial word asserts (U11)", () -> {
+                byte[] buffer = new byte[16];
+                BitWriter writer = new BitWriter( buffer, 16 );
+                writer.writeBits( 0xAB, 8 );
+                writer.flushBits();
+                writer.flushBits();
+                check( Harness.fires( () -> writer.writeBits( 0xCD, 8 ) ), "writeBits after a partial flush" );
+                check( Harness.fires( () -> writer.writeBytes( new byte[1], 1 ) ), "writeBytes after a partial flush" );
+                check( Harness.fires( () -> writer.writeBytes( null, 0 ) ), "a zero-count writeBytes after a partial flush" );
+                BitWriter aligning = new BitWriter( new byte[16], 16 );
+                aligning.writeBits( 0x1, 3 );
+                aligning.flushBits();
+                check( Harness.fires( aligning::writeAlign ), "writeAlign after a partial flush" );
+
+                // witnesses: a flush on a word boundary stores no partial word, and reset starts a new write
+                BitWriter boundary = new BitWriter( new byte[16], 16 );
+                boundary.writeBits( 0, 32 );
+                boundary.writeBits( 0, 32 );
+                boundary.flushBits();
+                check( !Harness.fires( () -> boundary.writeBits( 0x3, 2 ) ), "witness: a write after a flush on a word boundary" );
+                writer.reset( buffer, 16 );
+                check( !Harness.fires( () -> writer.writeBits( 0xCD, 8 ) ), "witness: a write after reset" );
+            } );
+
+            test( "bitpacker: readBits asserts on a bit count outside [1,32]", () -> {
+                byte[] buffer = new byte[16];
+                check( Harness.fires( () -> new BitReader( buffer, 16 ).readBits( 0 ) ), "bits 0" );
+                check( Harness.fires( () -> new BitReader( buffer, 16 ).readBits( 33 ) ), "bits 33" );
+                check( Harness.fires( () -> new BitReader( buffer, 16 ).readBits( -1 ) ), "bits -1" );
+                check( !Harness.fires( () -> new BitReader( buffer, 16 ).readBits( 1 ) ), "witness: bits 1" );
+                check( !Harness.fires( () -> new BitReader( buffer, 16 ).readBits( 32 ) ), "witness: bits 32" );
+            } );
+
+            test( "bitpacker: BitReader asserts when a read would pass the end of the data", () -> {
+                byte[] buffer = new byte[8];
+                BitReader reader = new BitReader( buffer, 8 );
+                checkEqual( reader.readBits( 32 ), 0, "first word" );
+                checkEqual( reader.readBits( 32 ), 0, "second word" );
+                check( Harness.fires( () -> reader.readBits( 1 ) ), "one bit past the data" );
+                check( Harness.fires( () -> reader.readBytes( new byte[1], 1 ) ), "one byte past the data" );
+                check( !Harness.fires( () -> new BitReader( buffer, 8 ).readBytes( new byte[8], 8 ) ), "witness: the whole buffer reads" );
+                check( Harness.fires( () -> new BitReader( new byte[8], 16 ) ), "a data size larger than the array" );
+                check( Harness.fires( () -> new BitReader( new byte[8], -1 ) ), "a negative data size" );
+            } );
+        }
 
         test( "bitsRequired: the reference table", () -> {
             checkEqual( SerializeUtil.bitsRequired( 0, 0 ), 0, "0,0" );
@@ -197,5 +358,23 @@ final class BitpackerTests
                 checkEqual( SerializeUtil.unsignedToSigned( SerializeUtil.signedToUnsigned( value ) ), value, "round trip " + value );
             }
         } );
+    }
+
+    private static int chunkValue( long pattern, int position, int bits )
+    {
+        return (int) ( ( pattern >>> position ) & ( ( 1L << bits ) - 1 ) );
+    }
+
+    private static void referenceWriteBits( byte[] out, int[] bitIndex, int value, int bits )
+    {
+        for ( int bit = 0; bit < bits; bit++ )
+        {
+            if ( ( ( value >>> bit ) & 1 ) != 0 )
+            {
+                int index = bitIndex[0] + bit;
+                out[index >>> 3] |= (byte) ( 1 << ( index & 7 ) );
+            }
+        }
+        bitIndex[0] += bits;
     }
 }

@@ -319,9 +319,9 @@ public final class WriteStream implements BitStream
 
     private boolean checkBytes( byte[] data, int bytes )
     {
-        assert data != null;
+        assert data != null || bytes == 0;
         assert bytes >= 0;
-        assert bytes <= data.length;
+        assert data == null ? bytes == 0 : bytes <= data.length;
         // U10: the room for the whole operation, align and payload, before any bit
         assert writer.getBitsAvailable() >= writer.getAlignBits() + (long) bytes * 8;
         return true;
@@ -549,6 +549,8 @@ public final class WriteStream implements BitStream
      * Flush the last scratch word to memory. Required: the buffer's contents
      * are unspecified until it is called (IMPLEMENTING.md U11), so call it
      * after the final operation and before reading, sending or copying the data.
+     * A flush that stores a partial word ends the write: a write after it is
+     * write misuse, asserted under {@code -ea}, until {@link #reset}.
      */
     public void flush()
     {

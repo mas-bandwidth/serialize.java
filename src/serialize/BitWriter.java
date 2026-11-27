@@ -28,6 +28,7 @@ public final class BitWriter
     private long scratch;
     private long numBits;
     private long bitsWritten;
+    private boolean flushedPartialWord;
 
     /**
      * Creates a bit writer over the given buffer.
@@ -52,6 +53,7 @@ public final class BitWriter
         this.numBits = (long) bytes * 8;
         this.bitsWritten = 0;
         this.scratch = 0;
+        this.flushedPartialWord = false;
     }
 
     private static boolean checkReset( byte[] data, int bytes )
@@ -97,6 +99,7 @@ public final class BitWriter
         assert bits <= 32;
         assert bitsWritten + bits <= numBits;
         assert unsignedValue <= ( ( 1L << bits ) - 1 );
+        assert !flushedPartialWord;                             // U11: a flush mid-word ends the write
         return true;
     }
 
@@ -123,7 +126,7 @@ public final class BitWriter
      */
     public void writeBytes( byte[] source, int bytes )
     {
-        assert checkWriteBytes( bytes );
+        assert checkWriteBytes( source, bytes );
 
         // the head: the partial scratch word goes to the buffer whole — its high
         // bytes are zero, and the payload copy below overwrites exactly those.
@@ -132,8 +135,13 @@ public final class BitWriter
             LONG_LE.set( data, (int) ( bitsWritten >>> 3 ) & ~7, scratch );
         }
 
-        // the body: the whole payload, straight in at the byte cursor
-        System.arraycopy( source, 0, data, (int) ( bitsWritten >> 3 ), bytes );
+        // the body: the whole payload, straight in at the byte cursor. A null
+        // source is a valid no-op only when the count is zero, so a zero-byte
+        // copy is skipped rather than handed to arraycopy.
+        if ( bytes > 0 )
+        {
+            System.arraycopy( source, 0, data, (int) ( bitsWritten >> 3 ), bytes );
+        }
 
         bitsWritten += (long) bytes * 8;
 
@@ -152,24 +160,29 @@ public final class BitWriter
         }
     }
 
-    private boolean checkWriteBytes( int bytes )
+    private boolean checkWriteBytes( byte[] source, int bytes )
     {
+        assert source != null || bytes == 0;
         assert bytes >= 0;
         assert bitsWritten + (long) bytes * 8 <= numBits;
         assert ( bitsWritten % 8 ) == 0;                        // byte aligned
+        assert !flushedPartialWord;                             // U11: a flush mid-word ends the write
         return true;
     }
 
     /**
      * Flush any remaining bits to memory. Call once after writing, or the
-     * last word of data will not reach the buffer. Stateless and idempotent:
-     * it stores the partial scratch word and changes nothing.
+     * last word of data will not reach the buffer. Idempotent. A flush that
+     * stores a partial word ends the write (IMPLEMENTING.md U11): a write
+     * after it is write misuse, asserted under {@code -ea}, until
+     * {@link #reset}.
      */
     public void flushBits()
     {
         if ( ( bitsWritten & 63 ) != 0 )
         {
             LONG_LE.set( data, (int) ( bitsWritten >>> 3 ) & ~7, scratch );
+            flushedPartialWord = true;
         }
     }
 

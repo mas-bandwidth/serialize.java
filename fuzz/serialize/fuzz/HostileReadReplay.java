@@ -14,6 +14,7 @@ public final class HostileReadReplay
         "Bits", "BitsAfterEnd", "Int", "IntFull", "IntBounded", "Int64-value64", "Int64-ranged64",
         "Fixed-fixed32", "Fixed-fixed64", "Fixed128-wide", "Int128-ranged128", "Int128-full128",
         "Bool", "Float", "Double", "CompressedFloat", "CompressedFloatPrecomputed",
+        "CompressedFloatHundred", "CompressedFloatClamped", "Object", "ObjectRefusingCallback", "Reject",
         "Uint64", "Uint128-value128", "Bits64-raw", "Bytes", "String", "End-stream", "Align-stream",
         "IntRelative-previous", "Uint8-value8", "Uint16-value16", "Uint32-value32" );
 
@@ -36,8 +37,9 @@ public final class HostileReadReplay
         int count = 0;
         // Zero payloads keep each preceding ranged field valid. Every byte truncation
         // reaches later members of grouped operations, rather than an earlier range error.
+        // Parameters 0..3 reach every compressed-float declaration; 13..15 reach object and reject.
         for ( int select = 0; select < 16; select++ )
-            for ( int param : new int[] { 0, 1, 15 } )
+            for ( int param : new int[] { 0, 1, 2, 3, 13, 14, 15 } )
                 for ( int bytes = 0; bytes <= 80; bytes++ )
                     for ( int fill : new int[] { 0, 255 } )
                     {

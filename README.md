@@ -19,7 +19,13 @@ specification in
 [mas-bandwidth/serialize](https://github.com/mas-bandwidth/serialize),
 which CI checks for drift — is the authority on every byte.
 
-Version 2.1.2 (`SerializeUtil.VERSION`), implementing format 2.0.
+If you would rather not write serialize functions by hand,
+[Schema](https://github.com/mas-bandwidth/schema) generates them for Java
+and many other languages from one definition of your data. The code it
+generates for Java carries its own bit reader and writer, so it does not
+need this library.
+
+Version 2.1.3 (`SerializeUtil.VERSION`), implementing format 2.0.
 
 If this library helps you, **[please support it](https://www.patreon.com/MasBandwidth/membership)**
 
@@ -30,7 +36,7 @@ package is not yet published: there is no artifact on Maven Central under any
 coordinate, and there is no Maven or Gradle build here to produce one.
 Publishing it is a separate round.
 
-Seventeen files under `src/serialize/`, zero dependencies, Java 17 language
+Eighteen files under `src/serialize/`, zero dependencies, Java 17 language
 level. Take it either way:
 
 **Copy the package in** — drop `src/serialize/` into your own source tree and
@@ -89,7 +95,8 @@ primitive-specialized holder cells (`IntRef`, `LongRef`, `BoolRef`,
 - **Refusal reasons**: `ReadStream.getRefusal()` names the first
   refusal from the standard's closed list (`Refusal`, spelled
   `past_end`, `value_out_of_range`, `nonzero_padding`, `trailing_data`,
-  `non_finite_float`, `invalid_utf8`, `embedded_nul`, `non_canonical`).
+  `non_finite_float`, `invalid_utf8`, `embedded_nul`, `non_canonical`,
+  `rejected`).
 - **The relative integer**: `serializeIntRelative` — the flag ladder for
   strictly increasing sequences over the domain 0 to 2^31 - 1, one bit
   for a difference of 1, every tier's reconstruction checked on read,
@@ -169,9 +176,9 @@ make fuzz-sentinel-controls # deterministic first-refusal replay and source cont
 
 ## Testing
 
-`make fuzz-sentinel-controls` replays 7,777 hostile inputs with assertions on
+`make fuzz-sentinel-controls` replays 18,145 hostile inputs with assertions on
 and off. Both complementary destination patterns must reach the first refusal
-of all 28 named read cases, including later members of grouped reads.
+of all 33 named read cases, including later members of grouped reads.
 Seven copied-reader controls plant destination writes that preserve the first
 pattern; the same oracle must catch each under the second pattern. The integer
 controls include partial destination writes in the high and low halves.

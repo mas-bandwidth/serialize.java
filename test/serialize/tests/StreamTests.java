@@ -243,6 +243,50 @@ final class StreamTests
             check( !small.serializeBytes( new byte[6], 6 ), "6 bytes from 5 refused" );
         } );
 
+        test( "serializeBytes: a null array with a zero count is an accepted no-op", () -> {
+            byte[] buffer = new byte[32];
+            WriteStream writer = new WriteStream( buffer, 24 );
+            check( writer.serializeBytes( null, 0 ), "null zero-count write" );
+            checkEqual( writer.getBitsProcessed(), 0, "null zero-count writes nothing" );
+            byte[] payload = GoldenWire.bytes( 9, 8, 7 );
+            check( writer.serializeBytes( payload, 3 ) );
+            writer.flush();
+
+            ReadStream reader = new ReadStream( buffer, (int) writer.getBytesProcessed() );
+            check( reader.serializeBytes( null, 0 ), "null zero-count read" );
+            byte[] readBack = new byte[3];
+            check( reader.serializeBytes( readBack, 3 ) );
+            Harness.checkBytesEqual( readBack, payload, 3, "payload after a null zero-count read" );
+
+            // a null array with a positive count is still the caller's misuse
+            ReadStream nullPositive = new ReadStream( new byte[8], 8 );
+            check( !nullPositive.serializeBytes( null, 1 ), "null with a positive count refused" );
+
+            // the measure accepts it too: zero bytes cost nothing beyond the align
+            MeasureStream measure = new MeasureStream();
+            check( measure.serializeBytes( null, 0 ), "null zero-count measure" );
+
+            // a zero-count block still aligns, as every bytes does, on all three streams
+            WriteStream alignWriter = new WriteStream( new byte[8], 8 );
+            check( alignWriter.serializeBits( new IntRef( 0x5 ), 3 ) );
+            check( alignWriter.serializeBytes( null, 0 ), "null zero-count write off a byte boundary" );
+            checkEqual( alignWriter.getBitsProcessed(), 8, "null zero-count write aligns" );
+            ReadStream alignReader = new ReadStream( new byte[8], 8 );
+            check( alignReader.serializeBits( new IntRef(), 3 ) );
+            check( alignReader.serializeBytes( null, 0 ), "null zero-count read off a byte boundary" );
+            checkEqual( alignReader.getBitsProcessed(), 8, "null zero-count read aligns" );
+            MeasureStream alignMeasure = new MeasureStream();
+            check( alignMeasure.serializeBits( new IntRef( 0x5 ), 3 ) );
+            check( alignMeasure.serializeBytes( null, 0 ), "null zero-count measure off a byte boundary" );
+            checkEqual( alignMeasure.getBitsProcessed(), 3 + 7, "null zero-count measure counts the worst-case align" );
+
+            // the bitpacker primitives accept the same zero-byte no-op
+            BitWriter bitWriter = new BitWriter( new byte[8], 8 );
+            bitWriter.writeBytes( null, 0 );
+            BitReader bitReader = new BitReader( new byte[8], 0 );
+            bitReader.readBytes( null, 0 );
+        } );
+
         test( "serializeBool and unsigned helpers round trip", () -> {
             byte[] buffer = new byte[24];
             WriteStream writer = new WriteStream( buffer, 24 );

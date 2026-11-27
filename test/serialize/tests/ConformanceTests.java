@@ -1168,9 +1168,54 @@ public final class ConformanceTests
             }
         }
 
+        /** What one reader pass leaves behind, so the two buffer layouts can be compared. */
+        private static final class ReaderPass
+        {
+            ReadStream stream;
+            Walk walk;
+            boolean accepted;
+            String[] values;
+            String reason;
+            long bits;
+        }
+
         private void runReader( List<Step> steps )
         {
-            ReadStream stream = new ReadStream( readerBuffer(), bytes.length );
+            ReaderPass slack = readOnce( steps, readerBuffer() );
+            checkReader( steps, slack );
+
+            // The same vector over a buffer with no trailing slack: the tail
+            // window ends exactly at the last byte, and the reader must reach
+            // the same verdict, values, refusal reason and bit count.
+            ReaderPass tight = readOnce( steps, Arrays.copyOf( bytes, bytes.length ) );
+            checkReader( steps, tight );
+
+            if ( slack.accepted != tight.accepted )
+            {
+                fail( "the tight buffer changed the verdict" );
+            }
+            for ( int i = 0; i < slack.values.length; i++ )
+            {
+                if ( !slack.values[i].equals( tight.values[i] ) )
+                {
+                    fail( "step " + ( i + 1 ) + " decoded " + tight.values[i]
+                          + " over the tight buffer, " + slack.values[i] + " with slack" );
+                }
+            }
+            if ( !slack.reason.equals( tight.reason ) )
+            {
+                fail( "the tight buffer refused for " + tight.reason + ", with slack " + slack.reason );
+            }
+            if ( slack.bits != tight.bits )
+            {
+                fail( "the tight buffer consumed " + tight.bits + " bits, with slack " + slack.bits );
+            }
+        }
+
+        /** Runs the vector once over the given buffer, capturing what the pass left behind. */
+        private ReaderPass readOnce( List<Step> steps, byte[] buffer )
+        {
+            ReadStream stream = new ReadStream( buffer, bytes.length );
 
             for ( Step step : steps )
             {
@@ -1180,8 +1225,26 @@ public final class ConformanceTests
                 step.text = "";
             }
 
-            Walk walk = new Walk();
-            boolean accepted = runSteps( stream, steps, 0, steps.size(), walk );
+            ReaderPass pass = new ReaderPass();
+            pass.stream = stream;
+            pass.walk = new Walk();
+            pass.accepted = runSteps( stream, steps, 0, steps.size(), pass.walk );
+            pass.values = new String[steps.size()];
+            for ( int i = 0; i < steps.size(); i++ )
+            {
+                pass.values[i] = renderStepValue( steps.get( i ) );
+            }
+            pass.reason = stream.getRefusal() == null ? "none" : stream.getRefusal().toString();
+            pass.bits = stream.getBitsProcessed();
+            return pass;
+        }
+
+        /** Checks one reader pass against the corpus vector. */
+        private void checkReader( List<Step> steps, ReaderPass pass )
+        {
+            ReadStream stream = pass.stream;
+            boolean accepted = pass.accepted;
+            Walk walk = pass.walk;
 
             if ( refused )
             {

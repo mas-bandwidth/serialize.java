@@ -11,8 +11,12 @@ import java.nio.charset.StandardCharsets;
  * {@link BitReader} presenting the unified {@link BitStream} interface.
  *
  * The read side faces untrusted data: every refusal rule of STANDARD.md
- * binds here in every build mode. Out-of-range or truncated input returns
- * false; hostile bytes never throw.
+ * binds here in every build mode. Out-of-range or truncated wire data
+ * returns false; hostile bytes never throw. That no-trap guarantee covers
+ * the wire and the value/declaration bounds. Passing a null reference
+ * holder (an {@link IntRef}, a {@link Ref}, and the other holder types) or
+ * a null {@link Serializer} object is the caller's misuse outside the
+ * guarantee and throws {@link NullPointerException}.
  *
  * A refused read leaves its scalar destination unwritten — the holder cell
  * holds what it held before the call — except for a caller-owned buffer,
@@ -50,6 +54,12 @@ public final class ReadStream implements BitStream
     private final CharsetDecoder utf8Decoder = StandardCharsets.UTF_8.newDecoder()
         .onMalformedInput( CodingErrorAction.REPORT )
         .onUnmappableCharacter( CodingErrorAction.REPORT );
+
+    /** The string length cell, reused across reads: the type has a Ref-typed length argument. */
+    private final IntRef stringLength = new IntRef();
+
+    /** The string payload scratch, grown on demand and reused across reads. */
+    private byte[] stringScratch = EMPTY;
 
     /**
      * @param buffer the buffer to read from. Any array size works; at least
@@ -477,8 +487,10 @@ public final class ReadStream implements BitStream
     {
         if ( failed ) return false;         // the latch: a failed stream refuses everything after
         // U7 and U16: a negative count, or a destination without the capacity
-        // for it, is the caller's misuse, refused before any bits move
-        if ( data == null || bytes < 0 || bytes > data.length )
+        // for it, is the caller's misuse, refused before any bits move. A null
+        // destination is a valid no-op only when the count is zero, matching
+        // the reference's acceptance of (nullptr, 0).
+        if ( bytes < 0 || ( data == null ? bytes != 0 : bytes > data.length ) )
         {
             return fail( Refusal.VALUE_OUT_OF_RANGE );
         }
@@ -525,7 +537,7 @@ public final class ReadStream implements BitStream
             return fail( Refusal.VALUE_OUT_OF_RANGE );
         }
         // the length, over [0, bufferSize-1]
-        IntRef length = new IntRef();
+        IntRef length = stringLength;
         if ( !serializeInt( length, 0, bufferSize - 1 ) )
         {
             return false;                   // the length latched its own reason
@@ -533,7 +545,7 @@ public final class ReadStream implements BitStream
         // the bytes, which align: the align first, so set padding is refused as
         // nonzero_padding even when the payload would also run past the end,
         // then the length is priced against the stream BEFORE the payload
-        // buffer is allocated, so a short hostile stream cannot force an
+        // buffer is grown, so a short hostile stream cannot force an
         // allocation of up to bufferSize bytes
         if ( !serializeAlign() )
         {
@@ -543,7 +555,11 @@ public final class ReadStream implements BitStream
         {
             return fail( Refusal.PAST_END );
         }
-        byte[] utf8 = new byte[length.value];
+        if ( stringScratch.length < length.value )
+        {
+            stringScratch = new byte[length.value];
+        }
+        byte[] utf8 = stringScratch;
         if ( !serializeBytes( utf8, length.value ) )
         {
             return false;                   // the bytes latched their own reason
@@ -570,7 +586,7 @@ public final class ReadStream implements BitStream
         String decoded;
         try
         {
-            decoded = utf8Decoder.reset().decode( ByteBuffer.wrap( utf8 ) ).toString();
+            decoded = utf8Decoder.reset().decode( ByteBuffer.wrap( utf8, 0, length.value ) ).toString();
         }
         catch ( CharacterCodingException error )
         {

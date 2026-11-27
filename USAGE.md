@@ -59,7 +59,9 @@ serializePlayer( measure, player );                // -> true
 `WriteStream` needs a buffer whose size is a multiple of 8 (the writer
 stores qwords to memory; asserted under `-ea`, U1); the packet to send is the first
 `getBytesProcessed()` bytes. **Flush is required**: the buffer's contents are
-unspecified until `flush()` is called after the last operation (U11). `MeasureStream` touches no memory at all —
+unspecified until `flush()` is called after the last operation, and a
+write after a flush that stored a partial word is write misuse, asserted
+under `-ea` (U11). `MeasureStream` touches no memory at all —
 it prices a message so you can size buffers; its bound is conservative
 (see [Measuring](#measuring)).
 
@@ -81,6 +83,14 @@ packet out of the buffer it was written into, as above, has the slack
 for free; a packet arriving from a socket lands in an array 8 bytes
 longer than the largest packet to keep it.
 
+**The backing array is retained, never copied.** `ReadStream` (through
+`BitReader`) keeps the caller's `byte[]` directly and byte-aligned reads
+draw from it live; only a tight array's final bytes are snapshotted into
+the tail at construction or `reset`. Do not modify the array between
+construction/`reset` and the final read. A change made in between is seen
+by reads that load from the live array but not by those that load from
+the tail snapshot, so a decode can mix stale and live bytes.
+
 A byte count outside the array (negative, or past its length) is the
 caller's misuse: the stream refuses it at construction or `reset` as
 `value_out_of_range`, and every read on it refuses (IMPLEMENTING.md U7).
@@ -98,14 +108,19 @@ everything, because the wire is a trust boundary.
 
 On the read side, every failure — a truncated read, a value outside its
 range, nonzero alignment padding, a non-finite float, a malformed string,
-bytes after the end — returns `false`, and hostile bytes never throw.
+bytes after the end — returns `false`, and hostile wire bytes never throw.
 
-**A reader never traps, on the caller's misuse either** (IMPLEMENTING.md
-U7, U16). A declaration that cannot be right is refused as
-`value_out_of_range` before any bits move, in every build, with or
-without `-ea`: a bit count outside `[1,32]` (`[1,64]` for `serializeBits64`),
-`min > max` on a ranged read, a string `bufferSize` below 1, a `bytes`
-count larger than the destination array (or a `null` one), an
+**A reader never traps on hostile wire data or on a bad value or
+declaration** (IMPLEMENTING.md U7, U16): that guarantee covers the wire
+and the value/declaration bounds below. Passing a `null` reference holder
+(`IntRef`, `LongRef`, `Ref`, and the other holder types) or a `null`
+`Serializer` object is the caller's misuse outside the guarantee and
+throws `NullPointerException`; it is not a refusal. A declaration that
+cannot be right is refused as `value_out_of_range` before any bits move,
+in every build, with or without `-ea`: a bit count outside `[1,32]`
+(`[1,64]` for `serializeBits64`), `min > max` on a ranged read, a string
+`bufferSize` below 1, a `bytes` count larger than the destination array
+(a `null` destination is accepted only when the count is zero), an
 `int_relative` `previous` below 0, a fixed point declaration that does not
 fit its Q format, a compressed float declaration that is not conforming,
 and precomputed compressed float constants that cannot be right. The
@@ -285,6 +300,22 @@ w.serializeUint32( new IntRef( 0x12345678 ) );
 w.serializeUint64( new LongRef( 0xfedcba9876543210L ) ); // unsigned, bit transparent in long
 w.serializeUint128( new Ref<>( UInt128Value.fromUnsignedLong( 1 ).shiftLeft( 100 ) ) );
 w.serializeBool( new BoolRef( true ) );
+```
+
+When the value starts as a Java `byte` or `short`, mask it before it
+goes into the `IntRef`. Both types are signed and widen with sign
+extension, so `(byte) 0x80` becomes `-128` and `(short) 0x8000` becomes
+`-32768`. Handed to `serializeUint8`, `serializeUint16` or
+`serializeBits`, that negative int is wider than the field: `-ea` traps
+it as write misuse, and without assertions the sign-extended high bits
+are written alongside it. Mask to the unsigned width first:
+
+```java
+byte b = (byte) 0x80;
+short s = (short) 0x8000;
+
+w.serializeUint8( new IntRef( b & 0xFF ) );    // 0x80, not 0xFFFFFF80
+w.serializeUint16( new IntRef( s & 0xFFFF ) ); // 0x8000, not 0xFFFF8000
 ```
 
 **Unsigned-long discipline**: Java has no unsigned 64-bit type, so
@@ -583,8 +614,16 @@ br.readBytes( out, 3 );                           // out is now { 1, 2, 3 }
 
 The reader carries the same allocation contract as `ReadStream`: any
 array of at least the data, 8 bytes of slack past it for the fast path.
-`BitReader` and `BitWriter` are the raw engine: their contracts are
-asserted under `-ea` only, and a misused one may throw. The refusals of
+`BitReader` and `BitWriter` are the raw engine: their precondition checks
+— the bit count in `[1,32]`, a value that fits its field, buffer capacity,
+byte alignment, and no write after a flush that stored a partial word
+(U11) — are Java `assert` statements, so they exist only
+under `-ea`. With `-ea`, a misuse throws `AssertionError` at the call.
+With `-da`, those asserts are skipped: misuse is unchecked, and may
+silently truncate a value, corrupt the packed bits, read or write past
+the logical end of the data, or throw an ordinary runtime exception, but
+never an `AssertionError`. `flushBits` is idempotent, and ends the write
+when it stores a partial word; `reset` starts a new one. The refusals of
 U7 belong to `ReadStream`.
 
 ## Wire compatibility
